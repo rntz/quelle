@@ -1,0 +1,57 @@
+* architecture
+Two kinds of facts:
+ground truth (state) / derived knowledge (views)
+
+# Rules:
+- state transitions:
+  depend on both ground truth & derived knowledge, change ground truth
+
+- view rules:
+  depend on ground truth & derived knoweldge, define derived knowledge
+
+# Other notes:
+- inputs: affect ground truth by introducing new facts
+  (SENSE PREDICATES)
+
+- outputs: certain linear facts are consumed by the outside world as messages
+  (ACTION PREDICATES)
+
+- views: a live view of the system can hopefully be defined as a view that is
+  interpreted somehow by the external system.
+  (DISPLAY PREDICATES)
+
+# Problems:
+- does derived knowledge forward-chain? backward-chain?
+  how to avoid circularity, or permit it in a reasonable manner?
+
+- how can we efficiently re-calculate views when ground truth changes?
+  (Eve had to tackle this, look at how they did it.)
+
+# Questions:
+- is there any logical story for the relation between ground truth & derived
+  knowledge? ground truth acts linearly within itself, but derived knowledge
+  doesn't change it. what's up with that?
+
+- is there some relation to temporal logic here?
+
+- do we have any guarantee that outside inputs will get processed? Ceptre
+  achieves this by having separate "phases" (which seem like syntax sugar, but
+  maybe useful syntax sugar!) and then being able to detect if an outside input
+  hasn't been processed within the right phase.
+
+- (how) do we distinguish inputs/outputs/displayable-views from ordinary facts?
+  in Ceptre, program declares things as {predicates, sense, action}.
+  in Quelle: {state, sense, action, view, display}?
+
+* example applications
+games:
+- chess
+- snake
+- asteroids
+- IFs, roguelikes
+
+web server
+build system
+code analysis (eg. liveness)
+dice roller
+D&D stats calculator / game assistant
