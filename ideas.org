@@ -55,3 +55,6 @@ build system
 code analysis (eg. liveness)
 dice roller
 D&D stats calculator / game assistant
+* implementation
+one option for a decent prototype would be to do it in Elm!
+if Elm is too slow, could do JS backend / Elm frontend.
