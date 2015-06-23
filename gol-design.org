@@ -1,0 +1,21 @@
+* Idea
+
+Merge forward-chaining linear logic programming with temporal logic. Plus maybe
+functional programming for dealing with data structures.
+
+That way, we can describe stateful systems that evolve over time.
+
+Seems like we'd want at least three kinds of things:
+
+- "state": linear-use but temporal-persistent things:
+  facts which can be consumed to destroy them, but which unless consumed persist across time
+  nondeterminism a problem here - what if multiple rules match?
+
+- "views": temporal-ephemeral but linear-persistent things:
+  facts which persist within a given time-slice but disappear (unless re-derived) on a new time-step
+
+- "knowledge": temporal- and linear-persistent things
+  this is just plain old logic programming, sort of
+  maybe we don't need this?
+  not clear we want forward-chaining rather than backward here,
+  but how do you mix forward- and backward- chaining?
