@@ -55,3 +55,41 @@ build system
 code analysis (eg. liveness)
 dice roller
 D&D stats calculator / game assistant
+* view language
+
+  l : literals
+  ⊕ : binary operator
+  c : constructor
+
+  e : expression
+  e ::= x | l | e ⊕ e
+        (e₁, ..., eₙ) | πᵢ e
+        c(e₁, ..., eₙ) | case e {| pᵢ → eᵢ}*
+        λx.e | e₁ e₂
+        p ← e; e | fail | e₁ || e₂
+
+  sugar:
+    where e := true ← e
+    (let p = e₁ in e₂) := (case e₁ | p → e₂ | _ → fail)
+
+  p : pattern
+  p ::= x | l | c(p₁, ..., pₙ)
+        p ∧ p | p ∨ p
+        satisfies e # ?
+        ap f p      # ?
+        p <- (p. e) # ?
+        ... add more later - go look in my notebook! ...
+
+  d : declaration
+  d ::= x = e
+
+# some examples
+choice : [a] -> a
+choice [] = fail
+choice [x:xs] = x || choice xs
+
+choice x = case x | nil() → fail | cons(x,xs) → x || choice xs
+
+** problems with view language
+- no negation
+- unrestricted recursion
