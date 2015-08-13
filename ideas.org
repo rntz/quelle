@@ -1,3 +1,31 @@
+* architecture, revised?
+There are two kinds of facts: state (linear) and knowledge ("persistent").
+
+There are two kinds of state:
+- messages (input & output)
+- internal state
+
+There are two kinds of knowledge
+- external knowledge
+- derived knowledge
+
+State plus external knowledge (plus input messages?) is "ground truth".
+
+# Rules
+- State transitions: Can change internal state, consume input messages, and
+  produce output messages. Can depend on knowledge but not define it.
+
+- Views: Define derived knowledge. Can depend on input messages, internal state,
+  external knowledge, and other derived knowledge (might need a circularity
+  check, though). (I don't see any use-case for depending on output messages,
+  but I also see no reason to disallow it.)
+
+** 'Persistent' is a misnomer
+Persistent facts can change over time. However, within a given time-step, they
+do not change; they cannot be consumed or produced, only true or false, and
+there is no question of "how many" instances of them there are. In contrast,
+linear facts can be consumed and produced and *do* have numeric multiplicity.
+
 * architecture
 Two kinds of facts:
 ground truth (state) / derived knowledge (views)
@@ -60,7 +88,7 @@ D&D stats calculator / game assistant
 one option for a decent prototype would be to do it in Elm!
 if Elm is too slow, could do JS backend / Elm frontend.
 
-* view language
+* derived-knowledge language
 
   l : literals
   ⊕ : binary operator
@@ -70,6 +98,13 @@ if Elm is too slow, could do JS backend / Elm frontend.
   e ::= x | l | e ⊕ e
         (e₁, ..., eₙ) | πᵢ e
         c(e₁, ..., eₙ) | case e {| pᵢ → eᵢ}*
+        -- can I really have sets of *functions*?
+        -- how do I decide function equality?
+        -- as long as I don't care about aggregation it might not matter
+        -- but I probably do care about aggregation, ugh
+        -- what about the monoidal-closed structure of Rel? does that help?
+        -- (perhaps that just gives you composition of relations?)
+        -- (hm... equality of finite relations is decidable!)
         λx.e | e₁ e₂
         p ← e; e | fail | e₁ || e₂
 
@@ -98,3 +133,54 @@ choice x = case x | nil() → fail | cons(x,xs) → x || choice xs
 ** problems with view language
 - no negation
 - unrestricted recursion
+
+* datalog notes
+
+TODO: include negation
+
+  c : clause
+  l : literal
+  p : predicate symbol
+  t : term
+  k : constant
+  v : variable
+
+  c ::= l :- l, ..., l.
+  l ::= p(t, ..., t)
+  t ::= k | v
+
+  clause sugar:
+    l. --> l :- .   # i.e. empty list on rhs
+
+Restrictions:
+- Each variable occuring in the head of a clause must occur in its body. Thus
+  facts (clauses with no body) must be ground (have no variables). This prevents
+  quantifying over anything but finite sets.
+
+- All clauses defining a given predicate symbol have the same arity.
+  (This is inessential.)
+
+- Unlike in Prolog, terms may not be compound (i.e. of the form k(t, ..., t) for
+  some constant symbol k). This prevents generating new terms in rules, which is
+  necessary to guarantee termination.
+
+- Negation must be stratified. This means: Generate a graph of predicates by
+  putting an edge between predicate P and Q if any of P's clauses reference Q
+  beneath a negation. This graph must be acyclic.
+
+  Recursion is otherwise entirely permissible. (The semantics of datalog are
+  "least fixed point", so "foo(X) :- foo(X)." is a no-op.)
+
+- Moreover, each variable occurring in a negative literal of a clause body must
+  also occur in a positive literal in the same body. I believe this is necessary
+  for termination. Consider (foo :- not bar(Y).). This basically means "foo if
+  forall Y, not bar(Y).", but we haven't said over what we are quantifying!
+
+  Basically, all variables we ever use must occur in positive position so that
+  they have some "source of definition".
+
+Notes:
+- May implicitly test equality of variables by using them twice, as in Prolog.
+
+To consider:
+- Aggregation methods.
