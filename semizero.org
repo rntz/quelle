@@ -17,21 +17,26 @@ Infinite joins are difficult, as are infinite relations (see: Datalog vs Prolog,
 stratified negation), so let's restrict ourselves to the *finite* powerset monad
 P : Set -> Set that takes a set A the set of all *finite* subsets of A.
 
-The Kleisli & E-M categories of P are finite relations and semilattices with
-zero (i.e. semilattices with all *finite* joins), respectively.
+The Kleisli & Eilenberg-Moore categories of P are finitely expansive maps and
+semilattices with zero (i.e. semilattices with all *finite* joins),
+respectively.
+
+(A finitely expansive map f : A -> B is a function f : A -> FiniteSet B.)
 
 ** Notation
 
 If A is a semilattice, [A] is its carrier set.
 0 is the identity.
-(a ∧ b) is the join of a and b.
+(a ∨ b) is the join of a and b.
 
 ** Category of semilattices
 Category of semilattices is symmetric closed monoidal, or "*-autonomous".
 
-I think this means
+This means all finite products & coproducts coincide (this is called
+"semiadditive"). 0 is the initial & terminal object ("zero object"). Any two
+objects have a unique "zero morphism" between them that factors through 0.
 
-0 is the initial & terminal object.
+The tensor product construction is weeiiiird.
 
 ** Semilattices and partial orders
 
@@ -61,27 +66,19 @@ commutative. Neat!
 
 ** Language over semilattices with zero
 
-types   A ::= A x B | A ⊗ B | 0
+types   A ::= A × B | A ⊗ B | A ⊸ A | 0
 
-exprs   e ::= (e,e) | inl e | inr e
-              0 | false | true
+exprs   e ::= (e,e) | let (x,y) = e in e
+              inl e | inr e | case e of inl x -> e; inr x -> e
+              ⟨e,e⟩ | π₁ e | π₂ e
+              ()
+              λ x. e | e e
+              e ∨ e | 0
 
 A x B is cartesian product of semilattices.
 
   [A x B]       =: [A] x [B]
-  (a,x) ∧ (b,y) =: (a ∧ b, x ∧ y)
+  (a,x) ∨ (b,y) =: (a ∨ b, x ∨ y)
   0             =: (0,0)
 
   thus (a,x) ≤ (b,y) iff (a ≤ b) and (x ≤ y)
-
-A + B is disjoint union / sum / coproduct of semilattices.
-NOPE THIS DOES NOT WORK.
-
-  [A + B]       =: [A] + [B] (or, if you prefer, A ⊎ B)
-  inl a ∧ inl b =
-
-
-
-
-
-
