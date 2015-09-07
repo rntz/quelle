@@ -1,8 +1,36 @@
 #lang racket
 
-(define (assert t) (unless t (error "ASSERTION FAILURE")))
+(require (for-syntax syntax/parse))
 
-(define (set-unions sets) (foldl set-union (set) sets))
+(define (assert! t) (unless t (error "ASSERTION FAILURE")))
+
+(define (set-unions sets) (for*/set ([s sets] [x s]) x))
+
+(define-syntax set-call
+  (syntax-parser
+    [(_ f a ...)
+      (with-syntax ([(x ...)
+                      (map (lambda (_) (gensym)) (syntax->list #'(a ...)))])
+        #'(for*/set ([x a] ...) (f x ...)))]))
+
+(define (set-apply f args)
+  (match args
+    ['() (f)]
+    [(list a) (set-call f a)]
+    [(list a b) (set-call f a b)]
+    [(list a b c) (set-call f a b c)]
+    [(list a b c d) (set-call f a b c d)]
+    [(list a b c d e) (set-call f a b c d e)]
+    [(list a b c d e f) (set-call f a b c d e f)]
+    [(list a b c d e f g) (set-call f a b c d e f g)]
+    ;; is it really better to use streams here than to use lists or sets or
+    ;; vectors?
+    [_ (for/set ([x (cross-the-streams (map set->stream args))])
+         (apply f x))]))
+
+;; takes cartesian cross product of a list of streams
+(define (cross-the-streams streams)
+  (error "unimplemented"))              ;TODO
 
 (define (eqmap eq l . lsts)
   (define len (length l))
@@ -105,16 +133,17 @@
   (t-bot))
 
 (enum expr
+  ;; used for literals & primitive functions.
+  (e-base value type)
   (e-var name index) ;; DeBruijn indexing
   (e-empty) (e-union left right)
   (e-set expr) (e-any expr)
-  (e-fun var type body) (e-rel var type body) (e-app func arg)
-  ;; branches is a list of (pat . expr) pairs
-  (e-case subject branches)
   (e-tuple exprs) (e-proj index expr)
   (e-tag tag expr)
-  ;; used for literals & primitive functions.
-  (e-base value type))
+  ;; branches is a list of (pat . expr) pairs
+  (e-case subject branches)
+  (e-app func arg)
+  (e-fun var type body) (e-rel var type body))
 
 (enum pat
   (p-wild)
@@ -174,6 +203,8 @@
 (define env-ref list-ref)
 (define env-cons cons)
 
+
+;;; ----- old version -----
 ;; Returns two values: the type, and a (level . expr) pair. In `expr', every
 ;; subexpr is likewise tagged with its level as a (level . expr) pair,
 ;; recursively.
@@ -221,7 +252,7 @@
           [(t-fun a b) (values 'F b (subtype? atype a))]
           [(t-rel a b) (values 'R b (subtype? atype a))]
           [(t-bot)
-            (assert (and (eq? 'R (car fexp)) (eq? 'R (car aexp))))
+            (assert! (and (eq? 'R (car fexp)) (eq? 'R (car aexp))))
             (values 'R (t-bot) #t)]))
       (define level (level-maximum (list out-level (car fexp) (car aexp))))
       (values out-type (cons level (e-app fexp aexp)))]
@@ -266,6 +297,99 @@
     [(string? l) (t-str)]
     [#t (raise (type-error "unknown literal type"))]))
 
+
+;;; Translating level-annotated expressions into expressions with explicit
+;;; injections into sets. Also explicitly annotates whether applications are of
+;;; functions or relations.
+(struct e-pure expr (expr) #:transparent)
+(struct e-app-fun expr (func arg) #:transparent)
+(struct e-app-rel expr (func arg) #:transparent)
+
+(define (map-subexprs f e)
+  (match e
+    [(or (e-var _ _) (e-empty) (e-base _ _)) e]
+    [(e-set e) (e-set (f e))]
+    [(e-any e) (e-any (f e))]
+    [(e-fun var type body) (e-fun var type (f body))]
+    [(e-rel var type body) (e-rel var type (f body))]
+    [(e-app fnc arg) (e-app (f fnc) (f arg))]
+    [(e-tuple es) (e-tuple (map f es))]
+    [(e-tag tag expr) (e-tag tag (f expr))]
+    [(e-proj index expr) (e-proj index (f expr))]
+    [(e-case subj branches)
+      (e-case (f subj)
+        (map (lambda (x) (cons (car x) (f (cdr x)))) branches))]))
+
+;;; FIXME: what about e-any
+(define (inject-f expr)
+  (assert! (eq? 'F (car expr)))
+  (match (cdr expr)
+    [(e-set x) (e-set (inject-r x))]
+    [(e-rel v vtype body) (e-rel v vtype (inject-r body))]
+    [e (map-subexprs inject-f e)]))
+
+(define (inject-r expr)
+  (match expr
+    [(cons 'F e) (e-pure (inject-f expr))]
+    ;; wait, is this right? it's not clear.
+    [(cons 'R e) (map-subexprs inject-r e)]))
+
+
+;;; Evaluation of injected expressions
+(define (eval l σ e)
+  (define rel (match l ['F #f] ['R #t]))
+  (define (F) (assert! (eq? l 'F)))
+  (define (R) (assert! (eq? l 'R)))
+  (define pure (if rel set identity))
+  (define apply* (if rel set-apply apply))
+  (define-syntax-rule (call f a ...)
+    (if rel (set-call f a ...) (f a ...)))
+  (match e
+    ;; TODO: wrap v in contract checking its type
+    [(e-base v _) (pure v)]
+    [(e-var _ i) (pure (list-ref σ i))]
+    [(e-empty) (R) (set)]
+    [(e-union a b) (R) (set-union (eval 'R σ a) (eval 'R σ b))]
+    [(e-set e) (pure (eval 'R σ e))]
+    [(e-any e) (R) (set-unions (eval 'R σ e))]
+    [(e-tuple es)
+      (apply* vector-immutable (map (lambda (x) (eval l σ x)) es))]
+    [(e-proj i e) (call (lambda (x) (vector-ref i x)) (eval l σ e))]
+    [(e-tag tag e) (call (lambda (x) (list tag e))) (eval l σ e)]
+    [(e-app f a)
+      ;; FIXME: wrong
+      ;; need to know whether we're applying a fun or rel!
+      ;; behavior also varies by level.
+      (call (lambda (f x) (f x)) (eval l σ f) (eval l σ a))]
+    [(e-fun v vtype body)
+      (pure (lambda ()))
+      (error "unimplemented")]
+    [(e-rel v vtype body) (error "unimplemented")]
+    [(e-case subj branches) (error "unimplemented")]
+    ))
+
+;; (define (eval σ e)
+;;   (match e
+;;     ;; TODO: wrap v in contract checking its type
+;;     [(e-base v _) v]
+;;     [(e-var _ i) (list-ref σ i)]
+;;     [(e-empty) (set)]
+;;     [(e-union l r) (set-union (eval σ l) (eval σ r))]
+;;     [(e-set e) (eval σ e)] ;; is this right?
+;;     [(e-any e) (eval σ e)] ;; is this right?
+;;     ;; THIS IS WRONG.
+;;     ;; what if we're in relational context?
+;;     [(e-tuple es) (apply vector-immutable (map (lambda (x) (eval σ x)) es))]
+;;     [(e-proj i e) (vector-nth i )]
+;;     ))
+
+;; ;;; run
+;; (define (run l σ e)
+;;   (define ret (match l ['F identity] ['R set]))
+;;   (match e
+;;     [(e-base v _) (ret v)]
+;;     [(e-var _ idx) (ret (list-ref σ i))]
+;;     ))
 
 
 ;; (DEFINE (compile e [ctx '()])
