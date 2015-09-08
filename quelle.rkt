@@ -70,7 +70,7 @@
 
 (define (set-apply f args)
   (match args
-    ['() (f)]
+    ['() (set (f))]
     [(list a) (set-call f a)]
     [(list a b) (set-call f a b)]
     [(list a b c) (set-call f a b c)]
