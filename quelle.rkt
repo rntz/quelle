@@ -59,37 +59,6 @@
 (define (print-error err)
   (printf "error: ~a\n" (exn-message err)))
 
-(define-syntax-rule (let*/set ((p e) ...) body)
-  (for*/set ([p e] ... [x body]) x))
-
-(define (set-unions sets) (let*/set ([s sets]) s))
-
-(define-syntax set-call
-  (syntax-parser
-    [(_ f a ...)
-      (with-syntax ([(x ...)
-                      (map (lambda (_) (gensym)) (syntax->list #'(a ...)))])
-        #'(for*/set ([x a] ...) (f x ...)))]))
-
-(define (set-apply f args)
-  (match args
-    ['() (set (f))]
-    [(list a) (set-call f a)]
-    [(list a b) (set-call f a b)]
-    [(list a b c) (set-call f a b c)]
-    [(list a b c d) (set-call f a b c d)]
-    [(list a b c d e) (set-call f a b c d e)]
-    [(list a b c d e f) (set-call f a b c d e f)]
-    [(list a b c d e f g) (set-call f a b c d e f g)]
-    ;; is it really better to use streams here than to use lists or sets or
-    ;; vectors?
-    [_ (for/set ([x (cross-the-streams (map set->stream args))])
-         (apply f x))]))
-
-;; takes cartesian cross product of a list of streams
-(define (cross-the-streams streams)
-  (error "unimplemented"))              ;TODO
-
 (define (index-of v lst)
   (let loop ([i 0] [l lst])
     (match l
@@ -98,7 +67,7 @@
 
 (define (eqmap eq l . lsts)
   (define len (length l))
-  (and (andmap (lambda (l) (= len (length l))))
+  (and (andmap (lambda (l) (= len (length l))) lsts)
        (apply andmap eq l lsts)))
 
 (define (dict-union-with a b f)
@@ -124,6 +93,60 @@
     (enum-case name branch) ...))
 
 
+;;; Set utilities
+(define-syntax-rule (let*/set ((p e) ...) body)
+  (for*/set ([p e] ... [x body]) x))
+
+(define (set-unions sets) (let*/set ([s sets]) s))
+
+;;; TODO: fix this ugly code duplication.
+(define-syntax set-call/set
+  (syntax-parser
+    [(_ f a ...)
+      (with-syntax ([(x ...)
+                      (map (lambda (_) (gensym)) (syntax->list #'(a ...)))])
+        #'(let*/set ([x a] ...) (f x ...)))]))
+
+(define-syntax set-call
+  (syntax-parser
+    [(_ f a ...)
+      (with-syntax ([(x ...)
+                      (map (lambda (_) (gensym)) (syntax->list #'(a ...)))])
+        #'(for*/set ([x a] ...) (f x ...)))]))
+
+(define (set-apply f . args)
+  (match (apply list* args)
+    ['() (set (f))]
+    [(list a) (set-call f a)]
+    [(list a b) (set-call f a b)]
+    [(list a b c) (set-call f a b c)]
+    [(list a b c d) (set-call f a b c d)]
+    [(list a b c d e) (set-call f a b c d e)]
+    [(list a b c d e f) (set-call f a b c d e f)]
+    [(list a b c d e f g) (set-call f a b c d e f g)]
+    ;; is it really better to use streams here than to use lists or sets or
+    ;; vectors?
+    [_ (for/set ([x (cross-the-streams (map set->stream args))])
+         (apply f x))]))
+
+(define (set-apply/set f . args)
+  (match (apply list* args)
+    ['() (f)]
+    [(list a) (set-call/set f a)]
+    [(list a b) (set-call/set f a b)]
+    [(list a b c) (set-call/set f a b c)]
+    [(list a b c d) (set-call/set f a b c d)]
+    [(list a b c d e) (set-call/set f a b c d e)]
+    [(list a b c d e f) (set-call/set f a b c d e f)]
+    [(list a b c d e f g) (set-call/set f a b c d e f g)]
+    [_ (let*/set ([x (cross-the-streams (map set->stream args))])
+         (apply f x))]))
+
+;; takes cartesian cross product of a list of streams
+(define (cross-the-streams streams)
+  (error "unimplemented"))              ;TODO
+
+
 ;; AST types
 (define (F? x) (eq? x 'F))
 (define (R? x) (eq? x 'R))
@@ -131,16 +154,16 @@
 (define/contract (level-max l r)
   (-> level? level? level?)
   (if (or (R? l) (R? r)) 'R 'F))
-
-(define (level-maximum l) (foldl level-max 'F l))
+(define (level-max* . args)
+  (foldl level-max 'F (apply list* args)))
 
 (enum type
   (t-bool) (t-num) (t-str)
   ;; branches is a hash mapping names to types
   (t-sum branches)
   (t-tuple types)
-  ;; TODO?: enforce invariant that dom is never (t-bot)?
-  (t-fun dom cod) (t-rel dom cod)
+  ;; TODO: warn if any arg type is ever (t-bot)?
+  (t-fun args result) (t-rel args result)
   (t-set type)
   (t-bot))
 
@@ -154,8 +177,8 @@
   (e-tag tag expr)
   ;; branches is a list of (pat . expr) pairs. TODO: use a struct!
   (e-case subject branches)
-  (e-app func arg)
-  (e-fun var type body) (e-rel var type body))
+  (e-app func args)
+  (e-fun vars types body) (e-rel vars types body))
 
 (enum pat
   (p-wild)
@@ -175,20 +198,21 @@
     [(string? l) (t-str)]
     [#t (type-error! "unknown literal type")]))
 
-(define (map-subexprs f e)
-  (match e
-    [(or (e-var _ _) (e-empty) (e-base _ _)) e]
-    [(e-set e) (e-set (f e))]
-    [(e-any e) (e-any (f e))]
-    [(e-fun var type body) (e-fun var type (f body))]
-    [(e-rel var type body) (e-rel var type (f body))]
-    [(e-app fnc arg) (e-app (f fnc) (f arg))]
-    [(e-tuple es) (e-tuple (map f es))]
-    [(e-tag tag expr) (e-tag tag (f expr))]
-    [(e-proj index expr) (e-proj index (f expr))]
-    [(e-case subj branches)
-      (e-case (f subj)
-        (map (lambda (x) (cons (car x) (f (cdr x)))) branches))]))
+;; TODO: remove, unused
+;; (define (map-subexprs f e)
+;;   (match e
+;;     [(or (e-var _ _) (e-empty) (e-base _ _)) e]
+;;     [(e-set e) (e-set (f e))]
+;;     [(e-any e) (e-any (f e))]
+;;     [(e-fun var type body) (e-fun var type (f body))]
+;;     [(e-rel var type body) (e-rel var type (f body))]
+;;     [(e-app fnc args) (e-app (f fnc) (f arg))]
+;;     [(e-tuple es) (e-tuple (map f es))]
+;;     [(e-tag tag expr) (e-tag tag (f expr))]
+;;     [(e-proj index expr) (e-proj index (f expr))]
+;;     [(e-case subj branches)
+;;       (e-case (f subj)
+;;         (map (lambda (x) (cons (car x) (f (cdr x)))) branches))]))
 
 
 ;; Type manipulation
@@ -201,49 +225,64 @@
       (and (dict-has-key? b name)
            (subtype? type (dict-ref b name))))]
   [((t-set a) (t-set b)) (subtype? a b)]
-  [((t-tuple a) (t-tuple b)) (eqmap subtype? a b)]
+  [((t-tuple a) (t-tuple b)) (subtypes? a b)]
   [((t-fun ax ay) (t-fun bx by)) (and (subtype? bx ax) (subtype? ay by))]
   [((t-rel ax ay) (t-rel bx by)) (and (subtype? bx ax) (subtype? ay by))]
   [((t-bot) _) #t]
   [(a b) (equal? a b)])
+
+(define (subtypes? as bs) (eqmap subtype? as bs))
 
 ;;; least upper bound of two types. errors if types have no lub.
 (define/match (type-lub l r)
   [((t-bot) x) x]
   [(x (t-bot)) x]
   [((t-set a) (t-set b)) (t-set (type-lub a b))]
-  [((t-fun ax ay) (t-fun bx by)) (t-fun (type-glb ax bx) (type-lub ay by))]
-  [((t-rel ax ay) (t-rel bx by)) (t-rel (type-glb ax bx) (type-lub ay by))]
-  [((t-tuple a) (t-tuple b))
-    (if (= (length a) (length b)) (t-tuple (map type-lub a b))
-      (type-error! "tuple length mismatch"))]
+  [((t-fun ax ay) (t-fun bx by)) (arrow-type-lub t-fun ax bx ay by)]
+  [((t-rel ax ay) (t-rel bx by)) (arrow-type-lub t-rel ax bx ay by)]
+  [((t-tuple a) (t-tuple b)) (t-tuple (type-lubs a b "tuple length mismatch"))]
   [((t-sum a) (t-sum b)) (dict-union-with a b type-lub)]
   [(a b) (cond
            [(subtype? a b) b]
            [(subtype? b a) a]
            [#t (type-error! (format "could not unify ~v and ~v" a b))])])
 
-;;; greatest lower bound of two types. always exists b/c of (t-bot)
+(define (arrow-type-lub type-ctor ax bx ay by)
+  ;; TODO: warn if any type-glb of ax,bx is t-bot
+  (define x (type-glbs ax bx "parameter length mismatch"))
+  (when (member (t-bot) x) (warn! "argument of type bot"))
+  (type-ctor x (type-lub ay by)))
+
+;;; greatest lower bound of two types. always exists b/c of (t-bot), although
+;;; this is rather degenerate :/.
 (define (type-glb l r)
   (with-handlers ([type-error? (lambda (e) (t-bot))])
     (match* (l r)
       [((t-set a) (t-set b)) (t-set (type-glb a b))]
-      [((t-fun ax ay) (t-fun bx by)) (t-fun (type-lub ax bx) (type-glb ay by))]
-      [((t-rel ax ay) (t-rel bx by)) (t-rel (type-lub ax bx) (type-glb ay by))]
-      [((t-tuple a) (t-tuple b)) (if (not (= (length a) (length b))) (t-bot)
-                                   (t-tuple (map type-glb a b)))]
+      [((t-fun ax ay) (t-fun bx by)) (t-fun (type-lubs ax bx) (type-glb ay by))]
+      [((t-rel ax ay) (t-rel bx by)) (t-rel (type-lubs ax bx) (type-glb ay by))]
+      [((t-tuple a) (t-tuple b)) (t-tuple (type-glbs a b))]
       [((t-sum a) (t-sum b)) (dict-intersection-with a b type-glb)]
       [(a b) (cond
                [(subtype? a b) a]
                [(subtype? b a) b]
                [#t (t-bot)])])))
 
-(define (type-lub* l) (foldl type-lub (t-bot) l))
+(define (type-lubs ls rs [msg #f])
+  (if (= (length ls) (length rs)) (map type-lub ls rs)
+    (type-error! (or msg "type list length mismatch"))))
+
+(define (type-glbs ls rs [msg #f])
+  (if (= (length ls) (length rs)) (map type-glb ls rs)
+    (type-error! (or msg "type list length mismatch"))))
+
+(define (types-lub l) (foldl type-lub (t-bot) l))
 
 
 ;;; Type inference / expression elaboration
 (define env-cons cons)
 (define env-ref list-ref)
+(define (env-extend extension env) (append (reverse extension) env))
 
 ;; Elaborated expression forms:
 ;; e-app-{fun,rel} distinguish between applying a function or a relation
@@ -260,13 +299,17 @@
   (match e
     [(e-var _ i) (values (env-ref Γ i) (F e))]
     [(e-base _ t) (values t (F e))]
+
     [(e-empty) (values (t-bot) (R e))]
+
     [(e-union l r) (let*-values ([(lt le) (elab Γ l)]
                                  [(rt re) (elab Γ r)])
                      (values (type-lub lt rt) (R (e-union le re))))]
+
     [(e-set e-in)
       (define-values (t e) (elab Γ e-in))
       (values (t-set t) (F (e-set e)))]
+
     [(e-any e-in)
       (define-values (t e) (elab Γ e-in))
       (match t
@@ -275,11 +318,13 @@
           (warn! "`any' applied to empty set")
           (values (t-bot) (R (e-any e)))]
         [_ (type-error! "`any' applied to non-set")])]
+
     [(e-tuple es)
       (define-values (types exps)
         (for/lists (types exps) ([e es]) (elab Γ e)))
-      (define level (level-maximum (map car exps)))
+      (define level (level-max* (map car exps)))
       (values (t-tuple types) (cons level (e-tuple exps)))]
+
     [(e-proj index e-in)
       (define-values (t e) (elab Γ e-in))
       (match t
@@ -292,42 +337,49 @@
           (warn! "projecting from empty set")
           (values (t-bot) (R (e-proj index e)))]
         [_ (type-error! "projecting from non-tuple")])]
+
     [(e-tag tag e-in)
       (define-values (t e) (elab Γ e-in))
-      (values (t-sum (hash tag t)) (cons (car e) (e-tag e)))]
+      (values (t-sum (hash tag t)) (cons (car e) (e-tag tag e)))]
+
     [(e-case subj branches)
       (define-values (subj-t subj-e) (elab Γ subj))
       (define-values (branch-ts branch-es)
         (for/lists (types levels) ([b branches])
           (define Γ- (check-pat Γ subj-t (car b)))
           (elab (append Γ- Γ) (cdr b))))
-      (values (type-lub* branch-ts)
-        (cons (level-maximum (cons (car subj-e) (map car branch-es)))
+      (values (types-lub branch-ts)
+        (cons (level-max* (car subj-e) (map car branch-es))
           (e-case subj-e (map cons (map car branches) branch-es))))]
-    [(e-app fnc arg)
-      (define-values (ftype fexp) (elab Γ fnc))
-      (define-values (atype aexp) (elab Γ arg))
-      (define-values (argtype outtype app level)
+
+    [(e-app func args)
+      (define-values (ftype fexp) (elab Γ func))
+      (define-values (atypes aexps)
+        (for/lists (ts es) ([a args]) (elab Γ a)))
+      (define-values (argtypes outtype app level)
         (match ftype
-          [(t-fun a b)
-            (values a b e-app-fun (level-max (car fexp) (car aexp)))]
-          [(t-rel a b) (values a b e-app-rel 'R)]
+          [(t-fun as b)
+            (values as b e-app-fun (level-max* (car fexp) (map car aexps)))]
+          [(t-rel as b) (values as b e-app-rel 'R)]
           [(t-bot)
             (assert! (R? (car fexp)))
             (warn! "applying empty set")
             (values #f (t-bot) e-app-rel 'R)]
           [_ (type-error! "can only apply functions or relations")]))
-      (when (and argtype (not (subtype? atype argtype)))
-        (type-error! "wrong argument type"))
-      (values outtype (cons level (app fexp aexp)))]
-    [(e-fun v vtype body)
-      (define-values (body-type body-exp) (elab (env-cons vtype Γ) body))
+      (when (and argtypes (not (subtypes? atypes argtypes)))
+        ;; TODO: better error message here
+        (type-error! "wrong argument type(s)"))
+      (values outtype (cons level (app fexp aexps)))]
+
+    [(e-fun args atypes body)
+      (define-values (body-type body-exp) (elab (env-extend atypes Γ) body))
       (unless (F? (car body-exp))
         (type-error! "function bodies must be functional"))
-      (values (t-fun vtype body-type) (F (e-fun v vtype body-exp)))]
-    [(e-rel v vtype body)
-      (define-values (body-type body-exp) (elab (env-cons vtype Γ) body))
-      (values (t-rel vtype body-type) (F (e-rel v vtype body-exp)))]))
+      (values (t-fun atypes body-type) (F (e-fun args atypes body-exp)))]
+
+    [(e-rel args atypes body)
+      (define-values (body-type body-exp) (elab (env-extend atypes Γ) body))
+      (values (t-rel atypes body-type) (F (e-rel args atypes body-exp)))]))
 
 (define (check-pat Γ t p)
   (match p
@@ -362,22 +414,23 @@
 (define (make-tag tag exp) (list tag exp))
 
 (define (eval-R σ level-expr)
+  (define (recur x) (eval-R σ x))
   (match-define (cons level expr) level-expr)
   (if (F? level)
     (set (eval-F σ level-expr))
     (match expr
       [(e-empty) (set)]
-      [(e-union a b) (set-union (eval-R σ a) (eval-R σ b))]
+      [(e-union a b) (set-union (recur a) (recur b))]
       [(e-any e)
         (match (car e)
           ['F (eval-F σ e)]
-          ['R (set-unions (eval-R σ e))])]
+          ['R (set-unions (recur e))])]
       [(e-tuple es)
-        (set-apply make-tuple (map (lambda (e) (eval-R σ e)) es))]
-      [(e-proj i e) (for/set ([v (eval-R σ e)]) (tuple-ref v i))]
-      [(e-tag tag e) (for/set ([v (eval-R σ e)]) (make-tag tag v))]
+        (set-apply make-tuple (map recur es))]
+      [(e-proj i e) (for/set ([v (recur e)]) (tuple-ref v i))]
+      [(e-tag tag e) (for/set ([v (recur e)]) (make-tag tag v))]
       [(e-case subj branches)
-        (let*/set ([sv (eval-R subj)])
+        (let*/set ([sv (recur subj)])
           (let loop ([bs branches])
             (match bs
               ['() (error "no case matched")]
@@ -385,32 +438,28 @@
                 (match (pat-match p sv)
                   [#f (loop bs)]
                   [σ- (eval-R (append σ- σ) e)])])))]
-      [(e-app-fun fnc arg)
-        (match (car fnc)
-          ['F (let ((fv (eval-F σ fnc)))
-                (for/set ([av (eval-R σ arg)]) (fv av)))]
-          ['R (for*/set ([fv (eval-R σ fnc)] [av (eval-R σ arg)])
-                (fv av))])]
-      [(e-app-rel fnc arg)
-        (match (car fnc)
-          ['F (let ([fv (eval-F σ fnc)])
-                (let*/set ([av (eval-R σ arg)])
-                  (fv av)))]
-          ['R (let*/set ([fv (eval-R σ fnc)] [av (eval-R σ arg)])
-                 (fv av))])]
+      [(e-app-fun func args)
+        (match (car func)
+          ['F (set-apply (eval-F σ func) (map recur args))]
+          ['R (set-apply apply (recur func) (map recur args))])]
+      [(e-app-rel func args)
+        (match (car func)
+          ['F (set-apply/set (eval-F σ func) (map recur args))]
+          ['R (set-apply/set apply (recur func) (map recur args))])]
       [_ (error "internal invariant violation: not an R expression")])))
 
 (define (eval-F σ level-expr)
+  (define (recur x) (eval-F σ x))
   (match-define (cons level expr) level-expr)
   (unless (F? level) (error "internal invariant violation: got R, expected F"))
   (match expr
     [(e-base v _) v]
     [(e-var _ i) (env-ref σ i)]
     [(e-set e) (eval-R σ e)]
-    [(e-tuple es) (apply make-tuple (map (lambda (e) (eval-F σ e)) es))]
-    [(e-tag tag e) (make-tag tag (eval-F σ e))]
+    [(e-tuple es) (apply make-tuple (map recur es))]
+    [(e-tag tag e) (make-tag tag (recur e))]
     [(e-case subj branches)
-      (define sv (eval-F σ subj))
+      (define sv (recur subj))
       (let loop ([bs branches])
         (match bs
           ['() (error "no case matched")]
@@ -418,9 +467,9 @@
             (match (pat-match p sv)
               [#f (loop bs)]
               [σ- (eval-F (append σ- σ) e)])]))]
-    [(e-app-fun fnc arg) ((eval-F σ fnc) (eval-F σ arg))]
-    [(e-fun _ _ body) (lambda (x) (eval-F (env-cons x σ) body))]
-    [(e-rel _ _ body) (lambda (x) (eval-R (env-cons x σ) body))]
+    [(e-app-fun fnc arg) (apply (recur fnc) (map recur arg))]
+    [(e-fun _ _ body) (lambda as (eval-F (env-extend as σ) body))]
+    [(e-rel _ _ body) (lambda as (eval-R (env-extend as σ) body))]
     [_ (error "internal invariant violation: not an F expression")]))
 
 ;; returns either #f for no match or an env to be added to the current one
@@ -439,30 +488,36 @@
 
 
 ;;; Parsing s-expressions as exprs.
+;;; this parser is a gross hack.
 (define (parse e [env '()])
+  ;; (printf "parse ~a ~a\n" e env)
+  (define (recur x) (parse x env))
   (match e
     [(? lit? x) (e-base x (lit-type x))]
     ['empty (e-empty)]
-    [`(union ,a ,b) (e-union (parse a env) (parse b env))]
-    [`(set ,a) (e-set (parse a env))]
-    [`(any ,a) (e-any (parse a env))]
-    [`(list . ,es) (e-tuple (map (lambda (x) (parse x env)) es))]
-    [`(get ,(? number? index) ,a) (e-proj index (parse a env))]
+    [`(union ,a ,b) (e-union (recur a) (recur b))]
+    [`(set ,a) (e-set (recur a))]
+    [`(any ,a)  (e-any (recur a))]
+    [`(list . ,es) (e-tuple (map recur es))]
+    [`(get ,(? number? index) ,a) (e-proj index (recur a))]
     [(or `(tag ,(? symbol? name) ,a)
          `((,'quote ,(? symbol? name)) ,a))
-      (e-tag name (parse a env))]
-    [`(case ,subj . ,branches)
-      (e-case (parse subj env)
-        (for/list ([b branches])
-          (match-define `(,p ,e) b)
+      (e-tag name (recur a))]
+    [`(case ,subj (,ps ,es) ...)
+      (e-case (recur subj)
+        (for/list ([p ps] [e es])
           (define pat (parse-pat p env))
-          (define value (parse e (append (pat-env pat) env)))
+          (define value (parse e (env-extend (pat-vars pat) env)))
           (cons pat value)))]
-    [`(fn (,x ,t) ,body)
-      (e-fun x (parse-type t) (parse body (cons x env)))]
-    [`(rel (,x ,t) ,body)
-      (e-rel x (parse-type t) (parse body (cons x env)))]
-    [(or `(app ,f ,a) `(,f ,a)) (e-app (parse f env) (parse a env))]
+    [`(fn (,vs ,ts) ... ,body)
+      (set! ts (map parse-type ts))
+      (e-fun vs ts (parse body (env-extend vs env)))]
+    [`(fn . ,_) (error "fn what now")]
+    [`(rel (,vs ,ts) ... ,body)
+      (set! ts (map parse-type ts))
+      (e-rel vs ts (parse body (env-extend vs env)))]
+    [(or `(app ,f . ,as) `(,f . ,as))
+      (e-app (recur f) (map recur as))]
     [(or `(var ,name) (? symbol? name))
       (define index (index-of name env))
       (if index (e-var name index)
@@ -491,12 +546,12 @@
     [(or `(list . ,ps) (? list? ps))
       (p-tuple (map (lambda (x) (parse-pat x env)) ps))]))
 
-(define (pat-env pat)
+(define (pat-vars pat)
   (match pat
     [(or (p-wild) (p-lit _)) '()]
     [(p-var name) (list name)]
-    [(p-tuple ps) (append* (reverse (map pat-env ps)))]
-    [(p-tag _ p) (pat-env p)]))
+    [(p-tuple ps) (append* (map pat-vars ps))]
+    [(p-tag _ p) (pat-vars p)]))
 
 
 ;; (define (compile e [ctx '()])
