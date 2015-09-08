@@ -56,6 +56,9 @@
 (define (assert! t) (unless t (error "ASSERTION FAILURE")))
 (define (warn! msg) (displayln (format "WARNING: ~a" msg)) )
 
+(define (print-error err)
+  (printf "error: ~a\n" (exn-message err)))
+
 (define-syntax-rule (let*/set ((p e) ...) body)
   (for*/set ([p e] ... [x body]) x))
 
@@ -304,17 +307,19 @@
     [(e-app fnc arg)
       (define-values (ftype fexp) (elab Γ fnc))
       (define-values (atype aexp) (elab Γ arg))
-      (match ftype
-        [(t-fun a b)
-          (define level (level-max (car fexp) (car aexp)))
-          (values b (cons level (e-app-fun fexp aexp)))]
-        [(t-rel a b)
-          (values b (R (e-app-rel fexp aexp)))]
-        [(t-bot)
-          (assert! (R? (car fexp)))
-          (warn! "applying empty set")
-          (values (t-bot) (R (e-app-rel fexp aexp)))]
-        [_ (type-error! "can only apply functions or relations")])]
+      (define-values (argtype outtype app level)
+        (match ftype
+          [(t-fun a b)
+            (values a b e-app-fun (level-max (car fexp) (car aexp)))]
+          [(t-rel a b) (values a b e-app-rel 'R)]
+          [(t-bot)
+            (assert! (R? (car fexp)))
+            (warn! "applying empty set")
+            (values #f (t-bot) e-app-rel 'R)]
+          [_ (type-error! "can only apply functions or relations")]))
+      (when (and argtype (not (subtype? atype argtype)))
+        (type-error! "wrong argument type"))
+      (values outtype (cons level (app fexp aexp)))]
     [(e-fun v vtype body)
       (define-values (body-type body-exp) (elab (env-cons vtype Γ) body))
       (unless (F? (car body-exp))
@@ -524,12 +529,19 @@
 (define (run expr)
   (printf "expr: ~v\n" expr)
   (define-values (type elab-expr) (elab '() expr))
-  (printf "elab: ~v\n" elab-expr)
-  (printf "type: ~v\n" type)
+  [printf "elab: ~v\n" elab-expr]
+  (printf "type: ~a\n" (pretty-format type))
+  (printf "lvl:  ~v\n" (car elab-expr))
   (define val
     (match (car elab-expr)
       ['F (eval-F '() elab-expr)]
       ['R (eval-R '() elab-expr)]))
   (printf "val:  ~v\n" val))
 
-(define (e-lit v) (e-base v (lit-type v)))
+(define (repl)
+  (printf "> ")
+  (define input (read))
+  (unless (eof-object? input)
+    (with-handlers ([exn:fail? print-error])
+      (run (parse input)))
+    (repl)))
