@@ -148,7 +148,7 @@
   (e-set expr) (e-any expr)
   (e-tuple exprs) (e-proj index expr)
   (e-tag tag expr)
-  ;; branches is a list of (pat . expr) pairs
+  ;; branches is a list of (pat . expr) pairs. TODO: use a struct!
   (e-case subject branches)
   (e-app func arg)
   (e-fun var type body) (e-rel var type body))
@@ -213,151 +213,86 @@
 (define env-ref list-ref)
 
 ;; Elaborated expression forms:
-;; e-pure goes from functional to relational, injecting into a singleton set
-(struct e-pure expr (expr) #:transparent)
 ;; e-app-{fun,rel} distinguish between applying a function or a relation
-(struct e-app-fun expr (func arg) #:transparent)
-(struct e-app-rel expr (func arg) #:transparent)
+(struct e-app-fun e-app () #:transparent)
+(struct e-app-rel e-app () #:transparent)
 
-;; elab : env, expr -> level, type, expr
-;; this is also the wrong approach!
-;;
-;; I think synth is the right approach, but I don't need e-pure, only
-;; e-app-{fun,rel}, and I want eval/compile to be level-directed.
-(define (elab Γ e)
-  (match e
-    [(e-base _ t) (values 'F t e)]
-    [(e-var _ i) (values 'F (env-ref Γ i) e)]
-    [(e-empty) (values 'R (t-bot) e)]
-    [(e-union a b)
-      (define-values (at ae) (elab-R Γ a))
-      (define-values (bt be) (elab-R Γ b))
-      (values 'R (type-lub at bt) (e-union ae be))]
-    [(e-set exp)
-      (define-values (t e) (elab-R Γ exp))
-      (values 'F (t-set t) (e-set e))]
-    [(e-any exp)
-      ;; This could be made marginally more efficient by elaborating into two
-      ;; forms depending on whether exp is F or R, rather than by forcing exp
-      ;; into R.
-      (define-values (t e) (elab-R Γ exp))
-      (values (match t
-                [(t-set a) a]
-                [(t-bot) (warn! "use of `any' on empty set") (t-bot)]
-                [_ (type-error! "use of `any' on non-set expression")])
-        (e-any e))]
-    [(e-tuple es)
-      (define-values (levels types exps)
-        (for/lists (levels types exps) ([exp es]) (elab Γ exp)))
-      (define level (level-maximum levels))
-      (when (R? level)
-        (set! exps (map fixup-R levels exps)))
-      (values level (t-tuple types) (e-tuple exps))]
-    [(e-proj index exp)
-      (define-values (l et e) (elab Γ exp))
-      (define t
-        (match et
-          [(t-tuple ts) (if (< index (length ts))
-                          (list-ref ts index)
-                          (type-error! "tuple not long enough"))]
-          [(t-bot) (t-bot)]
-          [_ (type-error! "not a tuple")]))
-      (values l t (e-proj index e))]
-    [(e-tag tag exp)
-      (define-values (l et e) (elab Γ exp))
-      (values l (t-sum (hash tag et)) (e-tag tag e))]
-    [(e-case subject branches) (error "unimplemented")]
-    [(e-app func arg)
-      (define-values (fl ft fe) (elab Γ func))
-      (define-values (al at ae) (elab Γ arg))
-      (define l (level-max fl al))
-      (when (R? l)
-        (set! fe (fixup-R fl fe))
-        (set! ae (fixup-R al ae)))
-      ;; FIXME: THIS IS WRONG
-      (match ft
-        [(t-fun src dst) (values l dst (e-app-fun fe ae))]
-        [(t-rel src dst) (values 'R dst (e-app-rel fe ae))]
-        [(t-bot)
-          (assert! (R? fl))
-          (warn! "applying empty set")
-          (values 'R (t-bot) (e-app-rel fe ae))]
-        [_ (type-error! "applying non-function, non-relation")])
-      ]
-    [(e-fun var type body) (error "unimplemented")]
-    [(e-rel var type body) (error "unimplemented")]
-    ))
-
-(define (elab-F Γ e [msg "expected functional expression"])
-  (define-values (el et ee) (elab Γ e))
-  (if (F? el) (values et ee)
-    (type-error! msg)))
-
-(define (elab-R Γ exp)
-  (define-values (l t e) (elab Γ exp))
-  (values t (fixup-R l e)))
-
-(define (fixup-R l e)
-  (match l ['R e] ['F (e-pure e)]))
-
-;;; ----- old version -----
 ;; Returns two values: the type, and a (level . expr) pair. In `expr', every
 ;; subexpr is likewise tagged with its level as a (level . expr) pair,
-;; recursively.
-(define (synth Γ e)
+;; recursively. Also, e-app has been elaborated into either e-app-{fun,rel} as
+;; appropriate.
+(define (elab Γ e)
   (define (F x) (cons 'F x))
   (define (R x) (cons 'R x))
   (match e
     [(e-var _ i) (values (env-ref Γ i) (F e))]
     [(e-base _ t) (values t (F e))]
     [(e-empty) (values (t-bot) (R e))]
-    [(e-union l r) (let*-values ([(lt le) (synth Γ l)]
-                                 [(rt re) (synth Γ r)])
+    [(e-union l r) (let*-values ([(lt le) (elab Γ l)]
+                                 [(rt re) (elab Γ r)])
                      (values (type-lub lt rt) (R (e-union le re))))]
-    [(e-set e_)
-      (define-values (t e) (synth Γ e_))
+    [(e-set e-in)
+      (define-values (t e) (elab Γ e-in))
       (values (t-set t) (F (e-set e)))]
-    [(e-any e_)
-      (define-values (t e) (synth Γ e_))
+    [(e-any e-in)
+      (define-values (t e) (elab Γ e-in))
       (match t
         [(t-set a) (values a (R (e-any e)))]
-        [(t-bot) (values (t-bot) (R (e-any e)))]
-        [_ (type-error! "e-any applied to non-set type")])]
+        [(t-bot)
+          (warn! "`any' applied to empty set")
+          (values (t-bot) (R (e-any e)))]
+        [_ (type-error! "`any' applied to non-set")])]
     [(e-tuple es)
       (define-values (types exps)
-        (for/lists (types exps) ([e es]) (synth Γ e)))
+        (for/lists (types exps) ([e es]) (elab Γ e)))
       (define level (level-maximum (map car exps)))
       (values (t-tuple types) (cons level (e-tuple exps)))]
-    [(e-tag tag e_)
-      (define-values (t e) (synth Γ e_))
+    [(e-proj index e-in)
+      (define-values (t e) (elab Γ e-in))
+      (match t
+        [(t-tuple ts)
+          (if (< index (length ts))
+            (values (list-ref ts index) (cons (car e) (e-proj index e)))
+            (type-error! "tuple too short"))]
+        [(t-bot)
+          (assert! (R? (car e)))
+          (warn! "projecting from empty set")
+          (values (t-bot) (R (e-proj index e)))]
+        [_ (type-error! "projecting from non-tuple")])]
+    [(e-tag tag e-in)
+      (define-values (t e) (elab Γ e-in))
       (values (t-sum (hash tag t)) (cons (car e) (e-tag e)))]
-    [(e-fun v vtype body)
-      (define-values (bodytype bodyexp) (synth (env-cons vtype Γ) body))
-      (unless (= 'F (car bodyexp))
-        (type-error! "function bodies must be functional"))
-      (values (t-fun vtype bodytype) (F (e-fun v vtype bodyexp)))]
-    [(e-rel v vtype body)
-      (define-values (bodytype bodyexp) (synth (env-cons vtype Γ) body))
-      (values (t-rel vtype bodytype) (F (e-rel v vtype bodyexp)))]
-    [(e-app f a)
-      (define-values (ftype fexp) (synth Γ f))
-      (define-values (atype aexp) (synth Γ a))
-      (define-values (out-level out-type app-ok)
-        (match ftype
-          [(t-fun a b) (values 'F b (subtype? atype a))]
-          [(t-rel a b) (values 'R b (subtype? atype a))]
-          [(t-bot)
-            (assert! (and (eq? 'R (car fexp)) (eq? 'R (car aexp))))
-            (values 'R (t-bot) #t)]))
-      (define level (level-maximum (list out-level (car fexp) (car aexp))))
-      (values out-type (cons level (e-app fexp aexp)))]
     [(e-case subj branches)
-      (define-values (subj-t subj-l) (synth Γ subj))
-      (define-values (types levels)
-        (unpair (for/list ([b branches])
-                  (define Γ' (check-pat Γ subj-t (car b)))
-                  (synth (append Γ' Γ) (check-pat Γ subj-t (car b)) (cdr b)))))
-      (values (type-lub* types) (level-maximum levels))]))
+      (define-values (subj-t subj-e) (elab Γ subj))
+      (define-values (branch-ts branch-es)
+        (for/lists (types levels) ([b branches])
+          (define Γ' (check-pat Γ subj-t (car b)))
+          (elab (append Γ' Γ) (cdr b))))
+      (values (type-lub* branch-ts)
+        (cons (level-maximum (cons (car subj-e) (map car branch-es)))
+          (e-case subj-e (map cons (map car branches) branch-es))))]
+    [(e-app fnc arg)
+      (define-values (ftype fexp) (elab Γ fnc))
+      (define-values (atype aexp) (elab Γ arg))
+      (match ftype
+        [(t-fun a b)
+          (define level (level-max (car fexp) (car aexp)))
+          (values b (cons level (e-app-fun fexp aexp)))]
+        [(t-rel a b)
+          (values b (R (e-app-rel fexp aexp)))]
+        [(t-bot)
+          (assert! (R? (car fexp)))
+          (warn! "applying empty set")
+          (values (t-bot) (R (e-app-rel fexp aexp)))]
+        [_ (type-error! "can only apply functions or relations")])]
+    [(e-fun v vtype body)
+      (define-values (body-type body-exp) (elab (env-cons vtype Γ) body))
+      (unless (F? (car body-exp))
+        (type-error! "function bodies must be functional"))
+      (values (t-fun vtype body-type) (F (e-fun v vtype body-exp)))]
+    [(e-rel v vtype body)
+      (define-values (body-type body-exp) (elab (env-cons vtype Γ) body))
+      (values (t-rel vtype body-type) (F (e-rel v vtype body-exp)))]))
 
 (define (check-pat Γ t p)
   (match p
@@ -393,6 +328,93 @@
     [#t (type-error! "unknown literal type")]))
 
 
+;; ----- old version, formerly new version -----
+;; e-pure goes from functional to relational, injecting into a singleton set
+;; (struct e-pure expr (expr) #:transparent)
+;;
+;; elab : env, expr -> level, type, expr
+;; this is also the wrong approach!
+;;
+;; I think synth is the right approach, but I don't need e-pure, only
+;; e-app-{fun,rel}, and I want eval/compile to be level-directed.
+;; (define (elab Γ e)
+;;   (match e
+;;     [(e-base _ t) (values 'F t e)]
+;;     [(e-var _ i) (values 'F (env-ref Γ i) e)]
+;;     [(e-empty) (values 'R (t-bot) e)]
+;;     [(e-union a b)
+;;       (define-values (at ae) (elab-R Γ a))
+;;       (define-values (bt be) (elab-R Γ b))
+;;       (values 'R (type-lub at bt) (e-union ae be))]
+;;     [(e-set exp)
+;;       (define-values (t e) (elab-R Γ exp))
+;;       (values 'F (t-set t) (e-set e))]
+;;     [(e-any exp)
+;;       ;; This could be made marginally more efficient by elaborating into two
+;;       ;; forms depending on whether exp is F or R, rather than by forcing exp
+;;       ;; into R.
+;;       (define-values (t e) (elab-R Γ exp))
+;;       (values (match t
+;;                 [(t-set a) a]
+;;                 [(t-bot) (warn! "use of `any' on empty set") (t-bot)]
+;;                 [_ (type-error! "use of `any' on non-set expression")])
+;;         (e-any e))]
+;;     [(e-tuple es)
+;;       (define-values (levels types exps)
+;;         (for/lists (levels types exps) ([exp es]) (elab Γ exp)))
+;;       (define level (level-maximum levels))
+;;       (when (R? level)
+;;         (set! exps (map fixup-R levels exps)))
+;;       (values level (t-tuple types) (e-tuple exps))]
+;;     [(e-proj index exp)
+;;       (define-values (l et e) (elab Γ exp))
+;;       (define t
+;;         (match et
+;;           [(t-tuple ts) (if (< index (length ts))
+;;                           (list-ref ts index)
+;;                           (type-error! "tuple not long enough"))]
+;;           [(t-bot) (t-bot)]
+;;           [_ (type-error! "not a tuple")]))
+;;       (values l t (e-proj index e))]
+;;     [(e-tag tag exp)
+;;       (define-values (l et e) (elab Γ exp))
+;;       (values l (t-sum (hash tag et)) (e-tag tag e))]
+;;     [(e-case subject branches) (error "unimplemented")]
+;;     [(e-app func arg)
+;;       (define-values (fl ft fe) (elab Γ func))
+;;       (define-values (al at ae) (elab Γ arg))
+;;       (define l (level-max fl al))
+;;       (when (R? l)
+;;         (set! fe (fixup-R fl fe))
+;;         (set! ae (fixup-R al ae)))
+;;       ;; FIXME: THIS IS WRONG
+;;       (match ft
+;;         [(t-fun src dst) (values l dst (e-app-fun fe ae))]
+;;         [(t-rel src dst) (values 'R dst (e-app-rel fe ae))]
+;;         [(t-bot)
+;;           (assert! (R? fl))
+;;           (warn! "applying empty set")
+;;           (values 'R (t-bot) (e-app-rel fe ae))]
+;;         [_ (type-error! "applying non-function, non-relation")])
+;;       ]
+;;     [(e-fun var type body) (error "unimplemented")]
+;;     [(e-rel var type body) (error "unimplemented")]
+;;     ))
+
+;; (define (elab-F Γ e [msg "expected functional expression"])
+;;   (define-values (el et ee) (elab Γ e))
+;;   (if (F? el) (values et ee)
+;;     (type-error! msg)))
+
+;; (define (elab-R Γ exp)
+;;   (define-values (l t e) (elab Γ exp))
+;;   (values t (fixup-R l e)))
+
+;; (define (fixup-R l e)
+;;   (match l ['R e] ['F (e-pure e)]))
+
+
+;;; OBSOLETE, TODO: remove
 ;;; Translating level-annotated expressions into expressions with explicit
 ;;; injections into sets. Also explicitly annotates whether applications are of
 ;;; functions or relations.
@@ -412,19 +434,19 @@
       (e-case (f subj)
         (map (lambda (x) (cons (car x) (f (cdr x)))) branches))]))
 
-;;; FIXME: what about e-any
-(define (inject-f expr)
-  (assert! (eq? 'F (car expr)))
-  (match (cdr expr)
-    [(e-set x) (e-set (inject-r x))]
-    [(e-rel v vtype body) (e-rel v vtype (inject-r body))]
-    [e (map-subexprs inject-f e)]))
+;; ;;; FIXME: what about e-any
+;; (define (inject-f expr)
+;;   (assert! (eq? 'F (car expr)))
+;;   (match (cdr expr)
+;;     [(e-set x) (e-set (inject-r x))]
+;;     [(e-rel v vtype body) (e-rel v vtype (inject-r body))]
+;;     [e (map-subexprs inject-f e)]))
 
-(define (inject-r expr)
-  (match expr
-    [(cons 'F e) (e-pure (inject-f expr))]
-    ;; wait, is this right? it's not clear.
-    [(cons 'R e) (map-subexprs inject-r e)]))
+;; (define (inject-r expr)
+;;   (match expr
+;;     [(cons 'F e) (e-pure (inject-f expr))]
+;;     ;; wait, is this right? it's not clear.
+;;     [(cons 'R e) (map-subexprs inject-r e)]))
 
 
 ;;; Evaluation of injected expressions
