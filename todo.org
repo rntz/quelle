@@ -3,7 +3,12 @@
 * have way to escape into racket
 * implement compiler
 * implement cross-the-streams
+* split into multiple files
+* symbol type & literals
 * future work
+** more powerful pattern language
+*** equality constraints
+** record types
 ** pretty-printer
 ** optimizations
 ** a real parser
