@@ -532,10 +532,7 @@
   [printf "elab: ~v\n" elab-expr]
   (printf "type: ~a\n" (pretty-format type))
   (printf "lvl:  ~v\n" (car elab-expr))
-  (define val
-    (match (car elab-expr)
-      ['F (eval-F '() elab-expr)]
-      ['R (eval-R '() elab-expr)]))
+  (define val ((match (car elab-expr) ['F eval-F] ['R eval-R]) '() elab-expr))
   (printf "val:  ~v\n" val))
 
 (define (repl)
