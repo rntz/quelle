@@ -162,7 +162,6 @@
   ;; branches is a hash mapping names to types
   (t-sum branches)
   (t-tuple types)
-  ;; TODO: warn if any arg type is ever (t-bot)?
   (t-fun args result) (t-rel args result)
   (t-set type)
   (t-bot))
@@ -198,22 +197,6 @@
     [(string? l) (t-str)]
     [#t (type-error! "unknown literal type")]))
 
-;; TODO: remove, unused
-;; (define (map-subexprs f e)
-;;   (match e
-;;     [(or (e-var _ _) (e-empty) (e-base _ _)) e]
-;;     [(e-set e) (e-set (f e))]
-;;     [(e-any e) (e-any (f e))]
-;;     [(e-fun var type body) (e-fun var type (f body))]
-;;     [(e-rel var type body) (e-rel var type (f body))]
-;;     [(e-app fnc args) (e-app (f fnc) (f arg))]
-;;     [(e-tuple es) (e-tuple (map f es))]
-;;     [(e-tag tag expr) (e-tag tag (f expr))]
-;;     [(e-proj index expr) (e-proj index (f expr))]
-;;     [(e-case subj branches)
-;;       (e-case (f subj)
-;;         (map (lambda (x) (cons (car x) (f (cdr x)))) branches))]))
-
 
 ;; Type manipulation
 (struct type-error exn:fail:user () #:transparent)
@@ -248,7 +231,6 @@
            [#t (type-error! (format "could not unify ~v and ~v" a b))])])
 
 (define (arrow-type-lub type-ctor ax bx ay by)
-  ;; TODO: warn if any type-glb of ax,bx is t-bot
   (define x (type-glbs ax bx "parameter length mismatch"))
   (when (member (t-bot) x) (warn! "argument of type bot"))
   (type-ctor x (type-lub ay by)))
