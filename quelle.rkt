@@ -160,6 +160,22 @@
   (p-tag tag pat)
   (p-lit lit))
 
+;;; utility, might come in handy
+(define (map-subexprs f e)
+  (match e
+    [(or (e-var _ _) (e-empty) (e-base _ _)) e]
+    [(e-set e) (e-set (f e))]
+    [(e-any e) (e-any (f e))]
+    [(e-fun var type body) (e-fun var type (f body))]
+    [(e-rel var type body) (e-rel var type (f body))]
+    [(e-app fnc arg) (e-app (f fnc) (f arg))]
+    [(e-tuple es) (e-tuple (map f es))]
+    [(e-tag tag expr) (e-tag tag (f expr))]
+    [(e-proj index expr) (e-proj index (f expr))]
+    [(e-case subj branches)
+      (e-case (f subj)
+        (map (lambda (x) (cons (car x) (f (cdr x)))) branches))]))
+
 
 ;; Type manipulation
 (struct type-error exn:fail:user () #:transparent)
@@ -328,127 +344,6 @@
     [#t (type-error! "unknown literal type")]))
 
 
-;; ----- old version, formerly new version -----
-;; e-pure goes from functional to relational, injecting into a singleton set
-;; (struct e-pure expr (expr) #:transparent)
-;;
-;; elab : env, expr -> level, type, expr
-;; this is also the wrong approach!
-;;
-;; I think synth is the right approach, but I don't need e-pure, only
-;; e-app-{fun,rel}, and I want eval/compile to be level-directed.
-;; (define (elab Γ e)
-;;   (match e
-;;     [(e-base _ t) (values 'F t e)]
-;;     [(e-var _ i) (values 'F (env-ref Γ i) e)]
-;;     [(e-empty) (values 'R (t-bot) e)]
-;;     [(e-union a b)
-;;       (define-values (at ae) (elab-R Γ a))
-;;       (define-values (bt be) (elab-R Γ b))
-;;       (values 'R (type-lub at bt) (e-union ae be))]
-;;     [(e-set exp)
-;;       (define-values (t e) (elab-R Γ exp))
-;;       (values 'F (t-set t) (e-set e))]
-;;     [(e-any exp)
-;;       ;; This could be made marginally more efficient by elaborating into two
-;;       ;; forms depending on whether exp is F or R, rather than by forcing exp
-;;       ;; into R.
-;;       (define-values (t e) (elab-R Γ exp))
-;;       (values (match t
-;;                 [(t-set a) a]
-;;                 [(t-bot) (warn! "use of `any' on empty set") (t-bot)]
-;;                 [_ (type-error! "use of `any' on non-set expression")])
-;;         (e-any e))]
-;;     [(e-tuple es)
-;;       (define-values (levels types exps)
-;;         (for/lists (levels types exps) ([exp es]) (elab Γ exp)))
-;;       (define level (level-maximum levels))
-;;       (when (R? level)
-;;         (set! exps (map fixup-R levels exps)))
-;;       (values level (t-tuple types) (e-tuple exps))]
-;;     [(e-proj index exp)
-;;       (define-values (l et e) (elab Γ exp))
-;;       (define t
-;;         (match et
-;;           [(t-tuple ts) (if (< index (length ts))
-;;                           (list-ref ts index)
-;;                           (type-error! "tuple not long enough"))]
-;;           [(t-bot) (t-bot)]
-;;           [_ (type-error! "not a tuple")]))
-;;       (values l t (e-proj index e))]
-;;     [(e-tag tag exp)
-;;       (define-values (l et e) (elab Γ exp))
-;;       (values l (t-sum (hash tag et)) (e-tag tag e))]
-;;     [(e-case subject branches) (error "unimplemented")]
-;;     [(e-app func arg)
-;;       (define-values (fl ft fe) (elab Γ func))
-;;       (define-values (al at ae) (elab Γ arg))
-;;       (define l (level-max fl al))
-;;       (when (R? l)
-;;         (set! fe (fixup-R fl fe))
-;;         (set! ae (fixup-R al ae)))
-;;       ;; FIXME: THIS IS WRONG
-;;       (match ft
-;;         [(t-fun src dst) (values l dst (e-app-fun fe ae))]
-;;         [(t-rel src dst) (values 'R dst (e-app-rel fe ae))]
-;;         [(t-bot)
-;;           (assert! (R? fl))
-;;           (warn! "applying empty set")
-;;           (values 'R (t-bot) (e-app-rel fe ae))]
-;;         [_ (type-error! "applying non-function, non-relation")])
-;;       ]
-;;     [(e-fun var type body) (error "unimplemented")]
-;;     [(e-rel var type body) (error "unimplemented")]
-;;     ))
-
-;; (define (elab-F Γ e [msg "expected functional expression"])
-;;   (define-values (el et ee) (elab Γ e))
-;;   (if (F? el) (values et ee)
-;;     (type-error! msg)))
-
-;; (define (elab-R Γ exp)
-;;   (define-values (l t e) (elab Γ exp))
-;;   (values t (fixup-R l e)))
-
-;; (define (fixup-R l e)
-;;   (match l ['R e] ['F (e-pure e)]))
-
-
-;;; OBSOLETE, TODO: remove
-;;; Translating level-annotated expressions into expressions with explicit
-;;; injections into sets. Also explicitly annotates whether applications are of
-;;; functions or relations.
-
-(define (map-subexprs f e)
-  (match e
-    [(or (e-var _ _) (e-empty) (e-base _ _)) e]
-    [(e-set e) (e-set (f e))]
-    [(e-any e) (e-any (f e))]
-    [(e-fun var type body) (e-fun var type (f body))]
-    [(e-rel var type body) (e-rel var type (f body))]
-    [(e-app fnc arg) (e-app (f fnc) (f arg))]
-    [(e-tuple es) (e-tuple (map f es))]
-    [(e-tag tag expr) (e-tag tag (f expr))]
-    [(e-proj index expr) (e-proj index (f expr))]
-    [(e-case subj branches)
-      (e-case (f subj)
-        (map (lambda (x) (cons (car x) (f (cdr x)))) branches))]))
-
-;; ;;; FIXME: what about e-any
-;; (define (inject-f expr)
-;;   (assert! (eq? 'F (car expr)))
-;;   (match (cdr expr)
-;;     [(e-set x) (e-set (inject-r x))]
-;;     [(e-rel v vtype body) (e-rel v vtype (inject-r body))]
-;;     [e (map-subexprs inject-f e)]))
-
-;; (define (inject-r expr)
-;;   (match expr
-;;     [(cons 'F e) (e-pure (inject-f expr))]
-;;     ;; wait, is this right? it's not clear.
-;;     [(cons 'R e) (map-subexprs inject-r e)]))
-
-
 ;;; Evaluation of injected expressions
 (define (eval l σ e)
   (define rel (match l ['F #f] ['R #t]))
@@ -505,7 +400,7 @@
 ;;     ))
 
 
-;; (DEFINE (compile e [ctx '()])
+;; (define (compile e [ctx '()])
 ;;   (define (recur x) (compile x ctx))
 ;;   (match e
 ;;     ;; shouldn't this depend on context?
