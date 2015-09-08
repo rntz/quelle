@@ -87,6 +87,12 @@
 (define (cross-the-streams streams)
   (error "unimplemented"))              ;TODO
 
+(define (index-of v lst)
+  (let loop ([i 0] [l lst])
+    (match l
+      ['() #f]
+      [(cons x xs) (if (equal? x v) i (loop (+ 1 i) xs))])))
+
 (define (eqmap eq l . lsts)
   (define len (length l))
   (and (andmap (lambda (l) (= len (length l))))
@@ -155,7 +161,17 @@
   (p-tag tag pat)
   (p-lit lit))
 
-;;; utility, might come in handy
+;;; Utilities
+(define (lit? x)
+  (or (boolean? x) (number? x) (string? x)))
+
+(define (lit-type l)
+  (cond
+    [(boolean? l) (t-bool)]
+    [(number? l) (t-num)]
+    [(string? l) (t-str)]
+    [#t (type-error! "unknown literal type")]))
+
 (define (map-subexprs f e)
   (match e
     [(or (e-var _ _) (e-empty) (e-base _ _)) e]
@@ -334,13 +350,6 @@
         [(t-bot) (check-pat Γ (t-bot) pat)]
         [_ (type-error! "not a sum")])]))
 
-(define (lit-type l)
-  (cond
-    [(boolean? l) (t-bool)]
-    [(number? l) (t-num)]
-    [(string? l) (t-str)]
-    [#t (type-error! "unknown literal type")]))
-
 
 ;;; Evaluation of elaborated expressions
 (define make-tuple vector)
@@ -422,6 +431,67 @@
           (and σ- (loop ps vs (append σ- σ)))]))]
   [((p-tag tag p) (list vtag v)) (and (equal? tag vtag) (pat-match p v))]
   [((p-lit l) v) (and (equal? l v) '())])
+
+
+;;; Parsing s-expressions as exprs.
+(define (parse e [env '()])
+  (match e
+    [(? lit? x) (e-base x (lit-type x))]
+    ['empty (e-empty)]
+    [`(union ,a ,b) (e-union (parse a env) (parse b env))]
+    [`(set ,a) (e-set (parse a env))]
+    [`(any ,a) (e-any (parse a env))]
+    [`(list . ,es) (e-tuple (map (lambda (x) (parse x env)) es))]
+    [`(get ,(? number? index) ,a) (e-proj index (parse a env))]
+    [(or `(tag ,(? symbol? name) ,a)
+         `((,'quote ,(? symbol? name)) ,a))
+      (e-tag name (parse a env))]
+    [`(case ,subj . ,branches)
+      (e-case (parse subj env)
+        (for/list ([b branches])
+          (match-define `(,p ,e) b)
+          (define pat (parse-pat p env))
+          (define value (parse e (append (pat-env pat) env)))
+          (cons pat value)))]
+    [`(fn (,x ,t) ,body)
+      (e-fun x (parse-type t) (parse body (cons x env)))]
+    [`(rel (,x ,t) ,body)
+      (e-rel x (parse-type t) (parse body (cons x env)))]
+    [(or `(app ,f ,a) `(,f ,a)) (e-app (parse f env) (parse a env))]
+    [(or `(var ,name) (? symbol? name))
+      (define index (index-of name env))
+      (if index (e-var name index)
+        (error (format "unbound variable: ~a" name)))]))
+
+(define (parse-type type)
+  (match type
+    ['bool (t-bool)] ['num (t-num)] ['str (t-str)]
+    [`(set ,t) (t-set (parse-type t))]
+    ['bot (t-bot)]
+    [`(tuple . ,ts) (t-tuple (map parse-type ts))]
+    [`(sum . ,bs)
+      (t-sum (for/hash ([b bs])
+               (match-define `(,name ,type) b)
+               (values name (parse-type type))))]
+    [`(-> ,x ,y) (t-fun (parse-type x) (parse-type y))]
+    [`(=> ,x ,y) (t-rel (parse-type x) (parse-type y))]))
+
+(define (parse-pat pat env)
+  (match pat
+    ['_ (p-wild)]
+    [(? lit? l) (p-lit l)]
+    [(or `(tag ,tag-name ,p)`(',(? symbol? tag-name) ,p))
+      (p-tag tag-name (parse-pat p env))]
+    [(? symbol? name) (p-var name)]
+    [(or `(list . ,ps) (? list? ps))
+      (p-tuple (map (lambda (x) (parse-pat x env)) ps))]))
+
+(define (pat-env pat)
+  (match pat
+    [(or (p-wild) (p-lit _)) '()]
+    [(p-var name) (list name)]
+    [(p-tuple ps) (append* (reverse (map pat-env ps)))]
+    [(p-tag _ p) (pat-env p)]))
 
 
 ;; (define (compile e [ctx '()])
