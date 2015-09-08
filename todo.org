@@ -1,4 +1,3 @@
-* make functions/relations multi-argument
 * include some builtin functions in parser
 * have way to escape into racket
 * implement compiler
