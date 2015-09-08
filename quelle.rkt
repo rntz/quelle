@@ -1,7 +1,58 @@
 #lang racket
 
+;; FEM = Finitely expansive maps.
+;; category of sets with f : A -> B being a a function f : A -> FinSet(B).
+;; symmetric monoidal under x, 1.
+;; semiadditive: cartesian & cocartesian and products & coproducts coincide.
+;;
+;; [A -o B] = [A] -> FinSet [B]
+;;
+;; Does *not* AFAIK form a model of linear logic *with exponentials*. That is to
+;; say, there's no model for the ! connective. There's an adjunction with Set,
+;; but it's not a monoidal adjunction (doesn't preserve the monoidal structure
+;; used by contexts).
+
+;; "Adjoint" language of FEMs.
+;; NB. two *different* kinds of functions!
+;; (A -> B): regular functions, 1-output (if terminating)
+;; (A => B): finitely expansive maps, finitely-many-outputs.
+;;
+;; types    A ::= A x A
+;;
+;; exprs    e ::= empty | e union e | set e | any e
+;;                x | fun x -> e | rel x -> e | e e
+;;                (e,...) | πᵢ e
+;;                case e of p -> e; ...
+;;                C | L | P
+;;
+;; literals L = booleans, numbers, strings
+;; ctors    C = symbols
+;; prims    P = + | - | * | / | == | <= | print
+;;
+;; patterns p ::= x | _ | (p, ...) | C p | L
+;;
+;; vars     x
+;;
+
+;; How do I interpret recursion?
+;; - Don't need it for now.
+
+;; Sugars:
+;;      (let p = e1 in e2)      => (case e1 of p -> e2)
+;;      {e | p1 = e1, ... }     => (let p1 = e1 in ... in e)
+;;        (can also just use bare "ei", which means "_ = ei")
+;;      when e                  => (let #t = e in ())
+;;
+;;      -- an unordered `case' statement; matches all branches in parallel
+;;      (union case e           => let x = e in
+;;          of p1 -> e1;             (let p1 = x in e1)
+;;             ...                   union ...
+;;             pn -> en)             union (let pn = x in en)
+
 (require (for-syntax syntax/parse))
 
+
+;;; Miscellaneous utilities
 (define (assert! t) (unless t (error "ASSERTION FAILURE")))
 (define (warn! msg) (displayln (format "WARNING: ~a" msg)) )
 
@@ -54,56 +105,6 @@
   (for/hash ([k (in-dict-keys a)]
               #:when (dict-has-key? b k))
     (f (dict-ref a k) (dict-ref b k))))
-
-
-;; FEM = Finitely expansive maps.
-;; category of sets with f : A -> B being a a function f : A -> FinSet(B).
-;; symmetric monoidal under x, 1.
-;; semiadditive: cartesian & cocartesian and products & coproducts coincide.
-;;
-;; [A -o B] = [A] -> FinSet [B]
-;;
-;; Does *not* AFAIK form a model of linear logic *with exponentials*. That is to
-;; say, there's no model for the ! connective. There's an adjunction with Set,
-;; but it's not a monoidal adjunction (doesn't preserve the monoidal structure
-;; used by contexts).
-
-;; "Adjoint" language of FEMs.
-;; NB. two *different* kinds of functions!
-;; (A -> B): regular functions, 1-output (if terminating)
-;; (A => B): finitely expansive maps, finitely-many-outputs.
-;;
-;; types    A ::= A x A
-;;
-;; exprs    e ::= empty | e union e | set e | any e
-;;                x | fun x -> e | rel x -> e | e e
-;;                (e,...) | πᵢ e
-;;                case e of p -> e; ...
-;;                C | L | P
-;;
-;; literals L = booleans, numbers, strings
-;; ctors    C = symbols
-;; prims    P = + | - | * | / | == | <= | print
-;;
-;; patterns p ::= x | _ | (p, ...) | C p | L
-;;
-;; vars     x
-;;
-
-;; How do I interpret recursion?
-;; - Don't need it for now.
-
-;; Sugars:
-;;      (let p = e1 in e2)      => (case e1 of p -> e2)
-;;      {e | p1 = e1, ... }     => (let p1 = e1 in ... in e)
-;;        (can also just use bare "ei", which means "_ = ei")
-;;      when e                  => (let #t = e in ())
-;;
-;;      -- an unordered `case' statement; matches all branches in parallel
-;;      (union case e           => let x = e in
-;;          of p1 -> e1;             (let p1 = x in e1)
-;;             ...                   union ...
-;;             pn -> en)             union (let pn = x in en)
 
 (define-syntax-rule (enum-case enum-name (branch-name args ...))
   (struct branch-name enum-name (args ...) #:transparent))
@@ -198,7 +199,10 @@
     (if (= (length a) (length b)) (t-tuple (map type-lub a b))
       (type-error! "tuple length mismatch"))]
   [((t-sum a) (t-sum b)) (dict-union-with a b type-lub)]
-  [(_ _) (type-error! "could not find lub")])
+  [(a b) (cond
+           [(subtype? a b) b]
+           [(subtype? b a) a]
+           [#t (type-error! (format "could not unify ~v and ~v" a b))])])
 
 ;;; greatest lower bound of two types. always exists b/c of (t-bot)
 (define (type-glb l r)
@@ -218,7 +222,7 @@
 (define (type-lub* l) (foldl type-lub (t-bot) l))
 
 
-;;; Type inference/checking/synthesis/elaboration
+;;; Type inference / expression elaboration
 (define env-cons cons)
 (define env-ref list-ref)
 
@@ -444,3 +448,18 @@
 ;;               (match x
 ;;                 [p e] ...
 ;;                 [_ (set)]))))]))
+
+
+;;; Putting it all together
+(define (run expr)
+  (printf "expr: ~v\n" expr)
+  (define-values (type elab-expr) (elab '() expr))
+  (printf "elab: ~v\n" elab-expr)
+  (printf "type: ~v\n" type)
+  (define val
+    (match (car elab-expr)
+      ['F (eval-F '() elab-expr)]
+      ['R (eval-R '() elab-expr)]))
+  (printf "val:  ~v\n" val))
+
+(define (e-lit v) (e-base v (lit-type v)))
