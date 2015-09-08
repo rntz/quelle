@@ -3,6 +3,7 @@
 (require (for-syntax syntax/parse))
 
 (define (assert! t) (unless t (error "ASSERTION FAILURE")))
+(define (warn! msg) (displayln (format "WARNING: ~a" msg)) )
 
 (define (set-unions sets) (for*/set ([s sets] [x s]) x))
 
@@ -54,6 +55,11 @@
     (f (dict-ref a k) (dict-ref b k))))
 
 (define (unpair l) (values (map car l) (map cdr l)))
+
+(define (unzip n l [get list-ref])
+  (values
+    (for/list ([i (in-range n)])
+      (map (lambda (x) (get x i)) l))))
 
 
 ;; FEM = Finitely expansive maps.
@@ -115,10 +121,12 @@
 
 
 ;; AST types
-(define (level? x) (or (eq? x 'F) (eq? x 'R)))
+(define (F? x) (eq? x 'F))
+(define (R? x) (eq? x 'R))
+(define (level? x) (or (F? x) (R? x)))
 (define/contract (level-max l r)
   (-> level? level? level?)
-  (if (or (eq? l 'R) (eq? r 'R)) 'R 'F))
+  (if (or (R? l) (R? r)) 'R 'F))
 
 (define (level-maximum l) (foldl level-max 'F l))
 
@@ -155,6 +163,7 @@
 
 ;; Type manipulation
 (struct type-error exn:fail:user () #:transparent)
+(define (type-error! msg) (raise (type-error msg)))
 
 (define/match (subtype? a b)
   [((t-sum a) (t-sum b))
@@ -177,9 +186,9 @@
   [((t-rel ax ay) (t-rel bx by)) (t-rel (type-glb ax bx) (type-lub ay by))]
   [((t-tuple a) (t-tuple b))
     (if (= (length a) (length b)) (t-tuple (map type-lub a b))
-      (raise (type-error "tuple length mismatch")))]
+      (type-error! "tuple length mismatch"))]
   [((t-sum a) (t-sum b)) (dict-union-with a b type-lub)]
-  [(_ _) (raise (type-error "could not find lub"))])
+  [(_ _) (type-error! "could not find lub")])
 
 ;;; greatest lower bound of two types. always exists b/c of (t-bot)
 (define (type-glb l r)
@@ -199,10 +208,97 @@
 (define (type-lub* l) (foldl type-lub (t-bot) l))
 
 
-;;; Type inference/checking/synthesis
-(define env-ref list-ref)
+;;; Type inference/checking/synthesis/elaboration
 (define env-cons cons)
+(define env-ref list-ref)
 
+;; Elaborated expression forms:
+;; e-pure goes from functional to relational, injecting into a singleton set
+(struct e-pure expr (expr) #:transparent)
+;; e-app-{fun,rel} distinguish between applying a function or a relation
+(struct e-app-fun expr (func arg) #:transparent)
+(struct e-app-rel expr (func arg) #:transparent)
+
+;; elab : env, expr -> level, type, expr
+;; this is also the wrong approach!
+;;
+;; I think synth is the right approach, but I don't need e-pure, only
+;; e-app-{fun,rel}, and I want eval/compile to be level-directed.
+(define (elab Γ e)
+  (match e
+    [(e-base _ t) (values 'F t e)]
+    [(e-var _ i) (values 'F (env-ref Γ i) e)]
+    [(e-empty) (values 'R (t-bot) e)]
+    [(e-union a b)
+      (define-values (at ae) (elab-R Γ a))
+      (define-values (bt be) (elab-R Γ b))
+      (values 'R (type-lub at bt) (e-union ae be))]
+    [(e-set exp)
+      (define-values (t e) (elab-R Γ exp))
+      (values 'F (t-set t) (e-set e))]
+    [(e-any exp)
+      ;; This could be made marginally more efficient by elaborating into two
+      ;; forms depending on whether exp is F or R, rather than by forcing exp
+      ;; into R.
+      (define-values (t e) (elab-R Γ exp))
+      (values (match t
+                [(t-set a) a]
+                [(t-bot) (warn! "use of `any' on empty set") (t-bot)]
+                [_ (type-error! "use of `any' on non-set expression")])
+        (e-any e))]
+    [(e-tuple es)
+      (define-values (levels types exps)
+        (for/lists (levels types exps) ([exp es]) (elab Γ exp)))
+      (define level (level-maximum levels))
+      (when (R? level)
+        (set! exps (map fixup-R levels exps)))
+      (values level (t-tuple types) (e-tuple exps))]
+    [(e-proj index exp)
+      (define-values (l et e) (elab Γ exp))
+      (define t
+        (match et
+          [(t-tuple ts) (if (< index (length ts))
+                          (list-ref ts index)
+                          (type-error! "tuple not long enough"))]
+          [(t-bot) (t-bot)]
+          [_ (type-error! "not a tuple")]))
+      (values l t (e-proj index e))]
+    [(e-tag tag exp)
+      (define-values (l et e) (elab Γ exp))
+      (values l (t-sum (hash tag et)) (e-tag tag e))]
+    [(e-case subject branches) (error "unimplemented")]
+    [(e-app func arg)
+      (define-values (fl ft fe) (elab Γ func))
+      (define-values (al at ae) (elab Γ arg))
+      (define l (level-max fl al))
+      (when (R? l)
+        (set! fe (fixup-R fl fe))
+        (set! ae (fixup-R al ae)))
+      ;; FIXME: THIS IS WRONG
+      (match ft
+        [(t-fun src dst) (values l dst (e-app-fun fe ae))]
+        [(t-rel src dst) (values 'R dst (e-app-rel fe ae))]
+        [(t-bot)
+          (assert! (R? fl))
+          (warn! "applying empty set")
+          (values 'R (t-bot) (e-app-rel fe ae))]
+        [_ (type-error! "applying non-function, non-relation")])
+      ]
+    [(e-fun var type body) (error "unimplemented")]
+    [(e-rel var type body) (error "unimplemented")]
+    ))
+
+(define (elab-F Γ e [msg "expected functional expression"])
+  (define-values (el et ee) (elab Γ e))
+  (if (F? el) (values et ee)
+    (type-error! msg)))
+
+(define (elab-R Γ exp)
+  (define-values (l t e) (elab Γ exp))
+  (values t (fixup-R l e)))
+
+(define (fixup-R l e)
+  (match l ['R e] ['F (e-pure e)]))
 
 ;;; ----- old version -----
 ;; Returns two values: the type, and a (level . expr) pair. In `expr', every
@@ -226,11 +322,10 @@
       (match t
         [(t-set a) (values a (R (e-any e)))]
         [(t-bot) (values (t-bot) (R (e-any e)))]
-        [_ (raise (type-error "e-any applied to non-set type"))])]
+        [_ (type-error! "e-any applied to non-set type")])]
     [(e-tuple es)
       (define-values (types exps)
-        (unpair (for/list ([e es])
-                  (call-with-values (lambda () (synth Γ e)) cons))))
+        (for/lists (types exps) ([e es]) (synth Γ e)))
       (define level (level-maximum (map car exps)))
       (values (t-tuple types) (cons level (e-tuple exps)))]
     [(e-tag tag e_)
@@ -239,7 +334,7 @@
     [(e-fun v vtype body)
       (define-values (bodytype bodyexp) (synth (env-cons vtype Γ) body))
       (unless (= 'F (car bodyexp))
-        (raise (type-error "function bodies must be functional")))
+        (type-error! "function bodies must be functional"))
       (values (t-fun vtype bodytype) (F (e-fun v vtype bodyexp)))]
     [(e-rel v vtype body)
       (define-values (bodytype bodyexp) (synth (env-cons vtype Γ) body))
@@ -270,7 +365,7 @@
     [(p-var _) (list t)]
     [(p-lit l)
       (if (subtype? t (lit-type l)) '()
-        (raise (type-error "wrong type when matched against literal")))]
+        (type-error! "wrong type when matched against literal"))]
     [(p-tuple pats)
       ((compose append* reverse)
         (match t
@@ -278,32 +373,29 @@
           [(t-tuple types)
             (if (= (length types) (length pats))
               (map (lambda (t p) (check-pat Γ t p)) types pats)
-              (raise (type-error "wrong length tuple pattern")))]
-          [_ (raise (type-error "not a tuple"))]))]
+              (type-error! "wrong length tuple pattern"))]
+          [_ (type-error! "not a tuple")]))]
     [(p-tag tag pat)
       (match t
         [(t-sum bs) (if (dict-has-key? bs tag)
                       (check-pat Γ (dict-ref bs tag) pat)
                       ;; FIXME: this is actually ok, it's just dead code; it
                       ;; should warn, not error.
-                      (raise (type-error "no such branch in tagged some")))]
+                      (type-error! "no such branch in tagged some"))]
         [(t-bot) (check-pat Γ (t-bot) pat)]
-        [_ (raise (type-error "not a sum"))])]))
+        [_ (type-error! "not a sum")])]))
 
 (define (lit-type l)
   (cond
     [(boolean? l) (t-bool)]
     [(number? l) (t-num)]
     [(string? l) (t-str)]
-    [#t (raise (type-error "unknown literal type"))]))
+    [#t (type-error! "unknown literal type")]))
 
 
 ;;; Translating level-annotated expressions into expressions with explicit
 ;;; injections into sets. Also explicitly annotates whether applications are of
 ;;; functions or relations.
-(struct e-pure expr (expr) #:transparent)
-(struct e-app-fun expr (func arg) #:transparent)
-(struct e-app-rel expr (func arg) #:transparent)
 
 (define (map-subexprs f e)
   (match e
@@ -362,7 +454,6 @@
       ;; behavior also varies by level.
       (call (lambda (f x) (f x)) (eval l σ f) (eval l σ a))]
     [(e-fun v vtype body)
-      (pure (lambda ()))
       (error "unimplemented")]
     [(e-rel v vtype body) (error "unimplemented")]
     [(e-case subj branches) (error "unimplemented")]
