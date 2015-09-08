@@ -5,7 +5,10 @@
 (define (assert! t) (unless t (error "ASSERTION FAILURE")))
 (define (warn! msg) (displayln (format "WARNING: ~a" msg)) )
 
-(define (set-unions sets) (for*/set ([s sets] [x s]) x))
+(define-syntax-rule (let*/set ((p e) ...) body)
+  (for*/set ([p e] ... [x body]) x))
+
+(define (set-unions sets) (let*/set ([s sets]) s))
 
 (define-syntax set-call
   (syntax-parser
@@ -38,8 +41,6 @@
   (and (andmap (lambda (l) (= len (length l))))
        (apply andmap eq l lsts)))
 
-(define (all xs) (andmap identity xs))
-
 (define (dict-union-with a b f)
   (define keys (set-union (list->set (dict-keys a)) (list->set (dict-keys b))))
   (for/hash ([k keys])
@@ -53,13 +54,6 @@
   (for/hash ([k (in-dict-keys a)]
               #:when (dict-has-key? b k))
     (f (dict-ref a k) (dict-ref b k))))
-
-(define (unpair l) (values (map car l) (map cdr l)))
-
-(define (unzip n l [get list-ref])
-  (values
-    (for/list ([i (in-range n)])
-      (map (lambda (x) (get x i)) l))))
 
 
 ;; FEM = Finitely expansive maps.
@@ -179,7 +173,7 @@
 
 ;; Type manipulation
 (struct type-error exn:fail:user () #:transparent)
-(define (type-error! msg) (raise (type-error msg)))
+(define (type-error! msg) (raise (type-error msg (current-continuation-marks))))
 
 (define/match (subtype? a b)
   [((t-sum a) (t-sum b))
@@ -282,8 +276,8 @@
       (define-values (subj-t subj-e) (elab Γ subj))
       (define-values (branch-ts branch-es)
         (for/lists (types levels) ([b branches])
-          (define Γ' (check-pat Γ subj-t (car b)))
-          (elab (append Γ' Γ) (cdr b))))
+          (define Γ- (check-pat Γ subj-t (car b)))
+          (elab (append Γ- Γ) (cdr b))))
       (values (type-lub* branch-ts)
         (cons (level-maximum (cons (car subj-e) (map car branch-es)))
           (e-case subj-e (map cons (map car branches) branch-es))))]
@@ -364,28 +358,28 @@
         (set-apply make-tuple (map (lambda (e) (eval-R σ e)) es))]
       [(e-proj i e) (for/set ([v (eval-R σ e)]) (tuple-ref v i))]
       [(e-tag tag e) (for/set ([v (eval-R σ e)]) (make-tag tag v))]
-      [(e-case subj branches) (error "unimplemented")] ;XXX
+      [(e-case subj branches)
+        (let*/set ([sv (eval-R subj)])
+          (let loop ([bs branches])
+            (match bs
+              ['() (error "no case matched")]
+              [(cons (cons p e) bs)
+                (match (pat-match p sv)
+                  [#f (loop bs)]
+                  [σ- (eval-R (append σ- σ) e)])])))]
       [(e-app-fun fnc arg)
         (match (car fnc)
-          ['F
-            (define fv (eval-F σ fnc))
-            (for/set ([av (eval-R σ arg)]) (fv av))]
-          ['R
-            (for*/set ([fv (eval-R σ fnc)]
-                       [av (eval-R σ arg)])
-              (fv av))])]
+          ['F (let ((fv (eval-F σ fnc)))
+                (for/set ([av (eval-R σ arg)]) (fv av)))]
+          ['R (for*/set ([fv (eval-R σ fnc)] [av (eval-R σ arg)])
+                (fv av))])]
       [(e-app-rel fnc arg)
         (match (car fnc)
-          ['F
-            (define fv (eval-F σ fnc))
-            (for*/set ([av (eval-R σ arg)]
-                       [ov (fv av)])
-              ov)]
-          ['R
-            (for*/set ([fv (eval-R σ fnc)]
-                       [av (eval-R σ arg)]
-                       [ov (fv av)])
-              ov)])]
+          ['F (let ([fv (eval-F σ fnc)])
+                (let*/set ([av (eval-R σ arg)])
+                  (fv av)))]
+          ['R (let*/set ([fv (eval-R σ fnc)] [av (eval-R σ arg)])
+                 (fv av))])]
       [_ (error "internal invariant violation: not an R expression")])))
 
 (define (eval-F σ level-expr)
@@ -397,11 +391,33 @@
     [(e-set e) (eval-R σ e)]
     [(e-tuple es) (apply make-tuple (map (lambda (e) (eval-F σ e)) es))]
     [(e-tag tag e) (make-tag tag (eval-F σ e))]
-    [(e-case subj branches) (error "unimplemented")]          ;XXX
+    [(e-case subj branches)
+      (define sv (eval-F σ subj))
+      (let loop ([bs branches])
+        (match bs
+          ['() (error "no case matched")]
+          [(cons (cons p e) bs)
+            (match (pat-match p sv)
+              [#f (loop bs)]
+              [σ- (eval-F (append σ- σ) e)])]))]
     [(e-app-fun fnc arg) ((eval-F σ fnc) (eval-F σ arg))]
     [(e-fun _ _ body) (lambda (x) (eval-F (env-cons x σ) body))]
     [(e-rel _ _ body) (lambda (x) (eval-R (env-cons x σ) body))]
     [_ (error "internal invariant violation: not an F expression")]))
+
+;; returns either #f for no match or an env to be added to the current one
+(define/match (pat-match pat val)
+  [((p-wild) _) '()]
+  [((p-var _) v) (list v)]
+  [((p-tuple ps) (? vector? vs))
+    (let loop ([ps ps] [vs (vector->list vs)] [σ '()])
+      (match* (ps vs)
+        [('() '()) σ]
+        [((cons p ps) (cons v vs))
+          (define σ- (pat-match p v))
+          (and σ- (loop ps vs (append σ- σ)))]))]
+  [((p-tag tag p) (list vtag v)) (and (equal? tag vtag) (pat-match p v))]
+  [((p-lit l) v) (and (equal? l v) '())])
 
 
 ;; (define (compile e [ctx '()])
