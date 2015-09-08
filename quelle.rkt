@@ -403,38 +403,6 @@
     [(e-rel _ _ body) (lambda (x) (eval-R (env-cons x σ) body))]
     [_ (error "internal invariant violation: not an F expression")]))
 
-;;; ---------- OLD VERSION ----------
-(define (eval l σ e)
-  (define rel (match l ['F #f] ['R #t]))
-  (define (F) (assert! (eq? l 'F)))
-  (define (R) (assert! (eq? l 'R)))
-  (define pure (if rel set identity))
-  (define apply* (if rel set-apply apply))
-  (define-syntax-rule (call f a ...)
-    (if rel (set-call f a ...) (f a ...)))
-  (match e
-    ;; TODO: wrap v in contract checking its type
-    [(e-base v _) (pure v)]
-    [(e-var _ i) (pure (list-ref σ i))]
-    [(e-empty) (R) (set)]
-    [(e-union a b) (R) (set-union (eval 'R σ a) (eval 'R σ b))]
-    [(e-set e) (pure (eval 'R σ e))]
-    [(e-any e) (R) (set-unions (eval 'R σ e))]
-    [(e-tuple es)
-      (apply* vector-immutable (map (lambda (x) (eval l σ x)) es))]
-    [(e-proj i e) (call (lambda (x) (vector-ref i x)) (eval l σ e))]
-    [(e-tag tag e) (call (lambda (x) (list tag e))) (eval l σ e)]
-    [(e-app f a)
-      ;; FIXME: wrong
-      ;; need to know whether we're applying a fun or rel!
-      ;; behavior also varies by level.
-      (call (lambda (f x) (f x)) (eval l σ f) (eval l σ a))]
-    [(e-fun v vtype body)
-      (error "unimplemented")]
-    [(e-rel v vtype body) (error "unimplemented")]
-    [(e-case subj branches) (error "unimplemented")]
-    ))
-
 
 ;; (define (compile e [ctx '()])
 ;;   (define (recur x) (compile x ctx))
