@@ -344,7 +344,66 @@
     [#t (type-error! "unknown literal type")]))
 
 
-;;; Evaluation of injected expressions
+;;; Evaluation of elaborated expressions
+(define make-tuple vector)
+(define tuple-ref vector-ref)
+(define (make-tag tag exp) (list tag exp))
+
+(define (eval-R σ level-expr)
+  (match-define (cons level expr) level-expr)
+  (if (F? level)
+    (set (eval-F σ level-expr))
+    (match expr
+      [(e-empty) (set)]
+      [(e-union a b) (set-union (eval-R σ a) (eval-R σ b))]
+      [(e-any e)
+        (match (car e)
+          ['F (eval-F σ e)]
+          ['R (set-unions (eval-R σ e))])]
+      [(e-tuple es)
+        (set-apply make-tuple (map (lambda (e) (eval-R σ e)) es))]
+      [(e-proj i e) (for/set ([v (eval-R σ e)]) (tuple-ref v i))]
+      [(e-tag tag e) (for/set ([v (eval-R σ e)]) (make-tag tag v))]
+      [(e-case subj branches) (error "unimplemented")] ;XXX
+      [(e-app-fun fnc arg)
+        (match (car fnc)
+          ['F
+            (define fv (eval-F σ fnc))
+            (for/set ([av (eval-R σ arg)]) (fv av))]
+          ['R
+            (for*/set ([fv (eval-R σ fnc)]
+                       [av (eval-R σ arg)])
+              (fv av))])]
+      [(e-app-rel fnc arg)
+        (match (car fnc)
+          ['F
+            (define fv (eval-F σ fnc))
+            (for*/set ([av (eval-R σ arg)]
+                       [ov (fv av)])
+              ov)]
+          ['R
+            (for*/set ([fv (eval-R σ fnc)]
+                       [av (eval-R σ arg)]
+                       [ov (fv av)])
+              ov)])]
+      [_ (error "internal invariant violation: not an R expression")])))
+
+(define (eval-F σ level-expr)
+  (match-define (cons level expr) level-expr)
+  (unless (F? level) (error "internal invariant violation: got R, expected F"))
+  (match expr
+    [(e-base v _) v]
+    [(e-var _ i) (env-ref σ i)]
+    [(e-set e) (eval-R σ e)]
+    [(e-tuple es) (apply make-tuple (map (lambda (e) (eval-F σ e)) es))]
+    [(e-tag tag e) (make-tag tag (eval-F σ e))]
+    [(e-case subj branches) (error "unimplemented")]          ;XXX
+    [(e-app-fun fnc arg) ((eval-F σ fnc) (eval-F σ arg))]
+    [(e-fun _ _ body) (lambda (x) (eval-F (env-cons x σ) body))]
+    [(e-rel _ _ body) (lambda (x) (eval-R (env-cons x σ) body))]
+    [_ (error "internal invariant violation: not an F expression")]))
+
+;;; ---------- OLD VERSION ----------
 (define (eval l σ e)
   (define rel (match l ['F #f] ['R #t]))
   (define (F) (assert! (eq? l 'F)))
@@ -375,29 +434,6 @@
     [(e-rel v vtype body) (error "unimplemented")]
     [(e-case subj branches) (error "unimplemented")]
     ))
-
-;; (define (eval σ e)
-;;   (match e
-;;     ;; TODO: wrap v in contract checking its type
-;;     [(e-base v _) v]
-;;     [(e-var _ i) (list-ref σ i)]
-;;     [(e-empty) (set)]
-;;     [(e-union l r) (set-union (eval σ l) (eval σ r))]
-;;     [(e-set e) (eval σ e)] ;; is this right?
-;;     [(e-any e) (eval σ e)] ;; is this right?
-;;     ;; THIS IS WRONG.
-;;     ;; what if we're in relational context?
-;;     [(e-tuple es) (apply vector-immutable (map (lambda (x) (eval σ x)) es))]
-;;     [(e-proj i e) (vector-nth i )]
-;;     ))
-
-;; ;;; run
-;; (define (run l σ e)
-;;   (define ret (match l ['F identity] ['R set]))
-;;   (match e
-;;     [(e-base v _) (ret v)]
-;;     [(e-var _ idx) (ret (list-ref σ i))]
-;;     ))
 
 
 ;; (define (compile e [ctx '()])
