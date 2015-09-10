@@ -428,17 +428,18 @@
         (match (car func)
           ['F (set-apply/set (eval-F σ func) (map recur args))]
           ['R (set-apply/set apply (recur func) (map recur args))])]
-      [_ (error "internal invariant violation: not an R expression")])))
+      [_ (error "internal error: not an R expression")])))
 
 (define (eval-F σ level-expr)
   (define (recur x) (eval-F σ x))
   (match-define (cons level expr) level-expr)
-  (unless (F? level) (error "internal invariant violation: got R, expected F"))
+  (unless (F? level) (error "internal error: got R, expected F"))
   (match expr
     [(e-base v _) v]
     [(e-var _ i) (env-ref σ i)]
     [(e-set e) (eval-R σ e)]
     [(e-tuple es) (apply make-tuple (map recur es))]
+    [(e-proj i e) (tuple-ref (recur e) i)]
     [(e-tag tag e) (make-tag tag (recur e))]
     [(e-case subj branches)
       (define sv (recur subj))
@@ -452,7 +453,7 @@
     [(e-app-fun fnc arg) (apply (recur fnc) (map recur arg))]
     [(e-fun _ _ body) (lambda as (eval-F (env-extend as σ) body))]
     [(e-rel _ _ body) (lambda as (eval-R (env-extend as σ) body))]
-    [_ (error "internal invariant violation: not an F expression")]))
+    [_ (error "internal error: not an F expression")]))
 
 ;; returns either #f for no match or an env to be added to the current one
 (define/match (pat-match pat val)
@@ -467,6 +468,100 @@
           (and σ- (loop ps vs (append σ- σ)))]))]
   [((p-tag tag p) (list vtag v)) (and (equal? tag vtag) (pat-match p v))]
   [((p-lit l) v) (and (equal? l v) '())])
+
+
+;;; Compilation to Racket
+(define (compile-F level-expr env)
+  (define (recur x) (compile-F x env))
+  (match-define (cons level expr) level-expr)
+  (unless (F? level) (error "internal error: got R, expected F"))
+  (match expr
+    [(e-base v _) #`'#,v]
+    [(e-var _ i) (env-ref env i)]
+    [(e-set e) (compile-R env e)]
+    [(e-tuple es) #`(make-tuple #,@(map recur es))]
+    [(e-proj i e) #`(tuple-ref #,(recur e) '#,i)]
+    [(e-tag tag e) #`(make-tag tag #,(recur e))]
+    [(e-case subj branches)
+      #`(let ((subject #,(recur subj)))
+          #,(compile-case #'subject compile-F branches env))]
+    [(e-app-fun func args) #`(#,(recur func) #,@(map recur args))]
+    [(e-fun vs _ body)
+      (define syms (map gensym vs))
+      #`(lambda (#,@syms) #,(compile-F body (env-extend syms env)))]
+    [(e-rel vs _ body)
+      (define syms (map gensym vs))
+      #`(lambda (#,@syms) #,(compile-R body (env-extend syms env)))]
+    [_ (error "internal error: not an F expression")]))
+
+(define (compile-R level-expr env)
+  (define (recur x) (compile-R x env))
+  (match-define (cons level expr) level-expr)
+  (if (F? level)
+    #`(set #,(compile-F level-expr env))
+    (match expr
+      [(e-empty) #'(set)]
+      [(e-union a b) #`(set-union #,(recur a) #,(recur b))]
+      [(e-any e) (match (car e)
+                   ['F (compile-F e env)]
+                   ['R #`(set-unions #,(recur e))])]
+      [(e-tuple es) #`(set-call make-tuple #,(map recur es))]
+      [(e-proj i e) #`(for/set ([x #,(recur e)]) (tuple-ref x '#,i))]
+      [(e-tag tag e) #`(for/set ([x #,(recur e)]) (make-tag '#,tag x))]
+      [(e-case subj branches)
+        (define cont (compile-case #'subject compile-R branches env))
+        (match (car subj)
+          ['F #`(let ((subject #,(compile-F subj env))) #,cont)]
+          ['R #`(let*/set ((subject #,(recur subj))) #,cont)])]
+      [(e-app-fun func args) (error "unimplemented")]
+      [(e-app-rel func args) (error "unimplemented")]
+      [_ (error "internal error: not an R expression")])))
+
+(define (compile-case subject-expr compiler branches env)
+  #`(match subj
+      #,@(for/list ([b branches])
+           (match-define (cons p e) b)
+           (define-values (racket-pat more-env) (compile-pat p env))
+           #`[#,racket-pat #,(compiler e (env-extend more-env env))])))
+
+;; compile-pat : pat (list-of sym) -> racket-pat (list-of sym)
+(define (compile-pat pat env)
+  (match pat
+    [(p-wild) (values #'_ '())]
+    [(p-var name) (let ((x (gensym name))) (values x (list x)))]
+    [(p-tuple ps)
+      (define-values (racket-pats envs)
+        (for/lists (pats envs) ([p ps]) (compile-pat p env)))
+      (values #`(vector #,@racket-pats) (append* envs))]
+    [(p-tag tag p)
+      (define-values (racket-pat env) (compile-pat p env))
+      (values #`(list '#,tag #,racket-pat) env)]
+    [(p-lit l) (values #`'#,l '())]))
+
+;; (define (compile e [ctx '()])
+;;   (define (recur x) (compile x ctx))
+;;   (match e
+;;     ;; shouldn't this depend on context?
+;;     [(e-var name) name]
+;;     [(e-empty) #'(set)]
+;;     [(e-union l r) #`(set-union #,(compile l ctx) #,(compile r ctx))]
+;;     [(e-pure e) #`(set #,e)]
+;;     [(e-app f args)
+;;       (unless (procedure? f) (error "applying non-procedure"))
+;;       (with-syntax ([(e ...) (map recur args)]
+;;                     [(x ...) (map (lambda (_) (gensym)) args)])
+;;         #`(for*/set ([x e] ...)
+;;             (#,f x ...)))]
+;;     [(e-case subject branches)
+;;       ;; FIXME: need to compile e in a different context!
+;;       (define/match (fixup x)
+;;         [((cons p e)) (cons p (recur e))])
+;;       (with-syntax ([((p . e) ...) (map fixup branches)])
+;;         #`(set-unions
+;;             (for*/list ([x #,(compile subject ctx)])
+;;               (match x
+;;                 [p e] ...
+;;                 [_ (set)]))))]))
 
 
 ;;; Parsing s-expressions as exprs.
@@ -511,12 +606,11 @@
     [`(set ,t) (t-set (parse-type t))]
     ['bot (t-bot)]
     [`(tuple . ,ts) (t-tuple (map parse-type ts))]
-    [`(sum . ,bs)
-      (t-sum (for/hash ([b bs])
-               (match-define `(,name ,type) b)
+    [`(sum (,names ,types) ...)
+      (t-sum (for/hash ([name names] [type types])
                (values name (parse-type type))))]
-    [`(-> ,x ,y) (t-fun (parse-type x) (parse-type y))]
-    [`(=> ,x ,y) (t-rel (parse-type x) (parse-type y))]))
+    [`(,xs ... -> ,y) (t-fun (map parse-type xs) (parse-type y))]
+    [`(,xs ... => ,y) (t-rel (map parse-type xs) (parse-type y))]))
 
 (define (parse-pat pat env)
   (match pat
@@ -535,31 +629,7 @@
     [(p-tuple ps) (append* (map pat-vars ps))]
     [(p-tag _ p) (pat-vars p)]))
 
-
-;; (define (compile e [ctx '()])
-;;   (define (recur x) (compile x ctx))
-;;   (match e
-;;     ;; shouldn't this depend on context?
-;;     [(e-var name) name]
-;;     [(e-empty) #'(set)]
-;;     [(e-union l r) #`(set-union #,(compile l ctx) #,(compile r ctx))]
-;;     [(e-pure e) #`(set #,e)]
-;;     [(e-app f args)
-;;       (unless (procedure? f) (error "applying non-procedure"))
-;;       (with-syntax ([(e ...) (map recur args)]
-;;                     [(x ...) (map (lambda (_) (gensym)) args)])
-;;         #`(for*/set ([x e] ...)
-;;             (#,f x ...)))]
-;;     [(e-case subject branches)
-;;       ;; FIXME: need to compile e in a different context!
-;;       (define/match (fixup x)
-;;         [((cons p e)) (cons p (recur e))])
-;;       (with-syntax ([((p . e) ...) (map fixup branches)])
-;;         #`(set-unions
-;;             (for*/list ([x #,(compile subject ctx)])
-;;               (match x
-;;                 [p e] ...
-;;                 [_ (set)]))))]))
+;(define builtins '(((+ - * / =) (num num -> num))))
 
 
 ;;; Putting it all together
