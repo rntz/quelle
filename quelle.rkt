@@ -513,16 +513,24 @@
         (match (car subj)
           ['F #`(let ((subject #,(compile-F subj env))) #,cont)]
           ['R #`(let*/set ((subject #,(recur subj))) #,cont)])]
-      [(e-app-fun func args) (error "unimplemented")]
-      [(e-app-rel func args) (error "unimplemented")]
+      [(e-app-fun func args) (compile-app-R func args env #'for/set)]
+      [(e-app-rel func args) (compile-app-R func args env #'let*/set)]
       [_ (error "internal error: not an R expression")])))
 
 (define (compile-case subject-expr compiler branches env)
-  #`(match subj
+  #`(match #,subject-expr
       #,@(for/list ([b branches])
            (match-define (cons p e) b)
            (define-values (racket-pat more-env) (compile-pat p env))
            #`[#,racket-pat #,(compiler e (env-extend more-env env))])))
+
+(define (compile-app-R func args env form)
+  ;; here we take advantage of order of evaluation being unspecified.
+  (define terms (for/list ([t (cons func args)]) (cons (gensym) t)))
+  (define-values (fs rs) (partition (compose F? cadr) terms))
+  #`(let #,(for/list ([f fs]) (list (car f) (compile-F (cdr f) env)))
+      (#,form #,(for/list ([r rs]) (list (car r) (compile-R (cdr r) env)))
+        #,(map car terms))))
 
 ;; compile-pat : pat (list-of sym) -> racket-pat (list-of sym)
 (define (compile-pat pat env)
@@ -635,12 +643,17 @@
 ;;; Putting it all together
 (define (run expr)
   (printf "expr: ~v\n" expr)
+
   (define-values (type elab-expr) (elab '() expr))
-  [printf "elab: ~v\n" elab-expr]
+  (define level (car elab-expr))
   (printf "type: ~a\n" (pretty-format type))
-  (printf "lvl:  ~v\n" (car elab-expr))
-  (define val ((match (car elab-expr) ['F eval-F] ['R eval-R]) '() elab-expr))
-  (printf "val:  ~v\n" val))
+  [printf "elab: ~v\n" elab-expr]
+
+  (printf "val:  ") (pretty-write ((if (F? level) eval-F eval-R) '() elab-expr))
+
+  (define code ((if (F? level) compile-F compile-R) elab-expr '()))
+  (printf "code: ") (pretty-write (syntax->datum code))
+  (printf "val:  ") (pretty-write (eval code)))
 
 (define (repl)
   (printf "> ")
@@ -649,3 +662,12 @@
     (with-handlers ([exn:fail? print-error])
       (run (parse input)))
     (repl)))
+
+(define test-expr
+  '(case (union 2 3)
+     (2 "two") (3 "three") (_ (union "hello" "fux"))))
+
+(define (test [test-expr test-expr])
+  (define e (parse test-expr))
+  (define-values (t ee) (elab '() e))
+  (pretty-write (syntax->datum (compile-R ee '()))))
