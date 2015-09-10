@@ -223,9 +223,16 @@
   (printf "~a: ~a\n" name (walk term (State-subst st)))
   (c/run (apply conj gs) st))
 
-(define ($! test . terms)
-  ()
-  )
+(define (($! func . terms) st)
+  (c/run (apply func (map (lambda (x) (walk x (State-subst st))) terms)) st))
+
+(define (($!! func . terms) st)
+  (define walked-terms (map (lambda (x) (walk x (State-subst st))) terms))
+  (c/run
+    (if (andmap ground? walked-terms)
+      (apply func walked-terms)
+      (zzz ($!! func walked-terms)))
+    st))
 
 
 ;;; Runners
@@ -234,15 +241,10 @@
 
 (define (run-goal g [n 10] [state empty-state])
   ;; hacky open coded stream-take
-  (for/list ([sub (run-goal g)]
+  (for/list ([sub (run-goal-raw g)]
              [_ (in-range n)])
     (for/hash ([(k v) (in-hash sub)])
       (values k (walk v sub)))))
-
-(define-syntax solns
-  (syntax-rules ()
-    )
-  )
 
 (define-syntax solve
   (syntax-rules ()
