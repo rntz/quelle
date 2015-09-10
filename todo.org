@@ -1,8 +1,6 @@
 * include some builtin functions in parser
 * have way to escape into racket
-* implement compiler
 * implement cross-the-streams
-* split into multiple files
 * symbol type & literals
 * future work
 ** more powerful pattern language

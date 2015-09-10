@@ -1,0 +1,48 @@
+FEM = Finitely expansive maps.
+category of sets with f : A -> B being a a function f : A -> FinSet(B).
+symmetric monoidal under x, 1.
+semiadditive: cartesian & cocartesian and products & coproducts coincide.
+
+[A -o B] = [A] -> FinSet [B]
+
+Does *not* AFAIK form a model of linear logic *with exponentials*. That is to
+say, there's no model for the ! connective. There's an adjunction with Set,
+but it's not a monoidal adjunction (doesn't preserve the monoidal structure
+used by contexts).
+
+"Adjoint" language of FEMs.
+NB. two *different* kinds of functions!
+(A -> B): regular functions, 1-output (if terminating)
+(A => B): finitely expansive maps, finitely-many-outputs.
+
+types    A ::= A x A
+
+exprs    e ::= empty | e union e | set e | any e
+               x | fun x -> e | rel x -> e | e e
+               (e,...) | πᵢ e
+               case e of p -> e; ...
+               C | L | P
+
+literals L = booleans, numbers, strings
+ctors    C = symbols
+prims    P = + | - | * | / | == | <= | print
+
+patterns p ::= x | _ | (p, ...) | C p | L
+
+vars     x
+
+
+How do I interpret recursion?
+- Don't need it for now.
+
+Sugars:
+     (let p = e1 in e2)      => (case e1 of p -> e2)
+     {e | p1 = e1, ... }     => (let p1 = e1 in ... in e)
+       (can also just use bare "ei", which means "_ = ei")
+     when e                  => (let #t = e in ())
+
+     -- an unordered `case' statement; matches all branches in parallel
+     (union case e           => let x = e in
+         of p1 -> e1;             (let p1 = x in e1)
+            ...                   union ...
+            pn -> en)             union (let pn = x in en)
