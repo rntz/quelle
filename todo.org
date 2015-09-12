@@ -6,6 +6,7 @@
 ** more powerful pattern language
 *** equality constraints
 ** record types
+** polymorphism
 ** pretty-printer
 ** optimizations
 ** a real parser
