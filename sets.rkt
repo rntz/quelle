@@ -53,5 +53,28 @@
          (apply f x))]))
 
 ;; takes cartesian cross product of a list of streams
-(define (cross-the-streams streams)
-  (error "unimplemented"))              ;TODO
+;; list (stream a) -> stream (list a)
+;; TODO: this is a funky ordering.
+;; we can assume our input streams are finite.
+;; make one with a more predictable ordering.
+(define (cross-the-streams s)
+  (match s
+    ['() (stream '())]
+    [(cons s ss)
+      (define rs (cross-the-streams ss))
+      (streams-interleave
+        (stream-map (lambda (x) (stream-map (lambda (y) (cons x y)) rs)) s))]))
+
+;; interleaves a stream of streams. every element of every stream is included
+;; eventually, even in the case of infinite input streams. (NB. I believe this
+;; is a monadic join operator on streams viewed as possibly-infinite multisets.)
+(define (streams-interleave ss)
+  (if (stream-empty? ss) empty-stream
+    (stream-interleave-lazy (stream-first ss)
+      (lambda () (streams-interleave (stream-rest ss))))))
+
+(define (stream-interleave-lazy s1 s2-thunk)
+  (if (stream-empty? s1)
+    (s2-thunk)
+    (stream-cons (stream-first s1)
+      (stream-interleave-lazy (s2-thunk) (lambda () (stream-rest s1))))))

@@ -5,7 +5,7 @@
 (provide
   define-syntax-parser fn enum enum-case
   (for-syntax syntax-parse syntax-parser)  ;; re-export
-  assert! warn! flip print-error index-of eqmap
+  assert! warn! flip print-error index-of eqmap stream-take
   hash-union-with hash-intersection-with)
 
 (define-syntax define-syntax-parser
@@ -62,6 +62,16 @@
   (define len (length l))
   (and (andmap (lambda (l) (= len (length l))) lsts)
        (apply andmap eq l lsts)))
+
+(define (stream-take n s)
+  (for/list ([x (in-stream s)]
+             [_ (in-range n)])
+    x))
+
+(define (stream-append-lazy stream stream-thunk)
+  (if (stream-empty? stream) (stream-thunk)
+    (stream-cons (stream-first stream)
+      (stream-append-lazy (stream-rest stream stream-thunk)))))
 
 (define (hash-union-with a b f)
   (define keys (set-union (list->set (dict-keys a)) (list->set (dict-keys b))))
