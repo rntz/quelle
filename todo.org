@@ -1,7 +1,5 @@
 * include some builtin functions in parser
 * have way to escape into racket
-* implement cross-the-streams
-* symbol type & literals
 * future work
 ** more powerful pattern language
 *** equality constraints
