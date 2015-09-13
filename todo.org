@@ -1,5 +1,15 @@
 * include some builtin functions in parser
 * have way to escape into racket
+* symbols?
+symbols can be thought of as just 0-ary constructors.
+OTOH, this makes functions which manipulate symbols much uglier.
+
+could define a special-purpose type that includes "all zero-ary constructors",
+but that's very ad-hoc & makes the lattice of types... weird. also, it will
+never(?) be inferred - unless used as an argument. which might be fine, in a
+sense?
+
+* add type-ascription form
 * future work
 ** more powerful pattern language
 *** equality constraints
