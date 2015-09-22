@@ -7,7 +7,12 @@
 (define-syntax-rule (let*/set ((p e) ...) body)
   (for*/set ([p e] ... [x body]) x))
 
-(define (set-unions sets) (let*/set ([s sets]) s))
+(define (set-unions sets)
+  ;;(let*/set ([s sets]) s)
+  (if (null sets) (set) (apply set-union sets)))
+
+(define (set-intersects sets)
+  (apply set-intersect sets))
 
 ;;; TODO: fix this ugly code duplication.
 (define-syntax set-call/set
