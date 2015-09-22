@@ -1,3 +1,5 @@
+* add syntax sugar
+** let
 * include some builtin functions in parser
 * have way to escape into racket
 * symbols?
