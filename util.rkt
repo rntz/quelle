@@ -3,7 +3,7 @@
 (require racket (for-syntax syntax/parse))
 
 (provide
-  define-syntax-parser fn enum enum-case
+  define-syntax-parser TODO fn enum enum-case
   (for-syntax syntax-parse syntax-parser)  ;; re-export
   assert! warn! flip print-error index-of eqmap stream-take
   hash-union-with hash-intersection-with)
@@ -18,6 +18,9 @@
     [(_ (name:id pattern ...) body ...)
       #'(define-syntax-parser name
           [(_ pattern ...) body ...])]))
+
+(define-syntax-parser TODO
+  [_:id #'(error "TODO: unimplemented")])
 
 (begin-for-syntax
   (define-syntax-class fn-clause
