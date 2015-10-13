@@ -1,6 +1,7 @@
 #lang racket
 
-(provide queue? empty-queue queue-empty? queue-pop queue-push queue->list)
+(provide
+  queue? empty-queue queue-empty? queue-push queue-pop queue-peek queue->list)
 
 ;; immutable queues.
 (struct queue (ins outs) #:transparent)
@@ -20,6 +21,12 @@
     [(queue '() '()) (values q (on-empty))]
     [(queue xs '()) (queue-pop (queue '() (reverse xs)))]
     [(queue xs (cons y ys)) (values (queue xs ys) y)]))
+
+;; TODO: this operation is asymptotically inefficient if used repeatedly, which
+;; we ignore for now. :(
+(define (queue-peek q [on-empty (lambda () (error "empty queue"))])
+  (define-values (_ x) (queue-pop q on-empty))
+  x)
 
 ;; produces list with next-to-pop first, most-recently-pushed last.
 (define (queue->list q)

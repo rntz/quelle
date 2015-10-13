@@ -6,7 +6,7 @@
   define-syntax-parser TODO fn enum enum-case
   (for-syntax syntax-parse syntax-parser)  ;; re-export
   assert! warn! flip print-error index-of eqmap stream-take
-  hash-union-with hash-intersection-with)
+  freeze-hash hash-union-with hash-intersection-with)
 
 (define-syntax define-syntax-parser
   (syntax-parser
@@ -76,14 +76,18 @@
     (stream-cons (stream-first stream)
       (stream-append-lazy (stream-rest stream stream-thunk)))))
 
+(define (freeze-hash h)
+  (make-immutable-hash (hash->list h)))
+
 (define (hash-union-with a b f)
   (define keys (set-union (list->set (dict-keys a)) (list->set (dict-keys b))))
   (for/hash ([k keys])
-    (if (not (dict-has-key? a k))
-      (dict-ref b k)
-      (if (not (dict-has-key? b k))
-        (dict-ref a k)
-        (f (dict-ref a k) (dict-ref b k))))))
+    (values k
+      (if (not (dict-has-key? a k))
+        (dict-ref b k)
+        (if (not (dict-has-key? b k))
+          (dict-ref a k)
+          (f (dict-ref a k) (dict-ref b k)))))))
 
 (define (hash-intersection-with a b f)
   (for/hash ([k (in-dict-keys a)]

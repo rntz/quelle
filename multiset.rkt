@@ -9,9 +9,6 @@
   multiset-union multiset-subtract submultiset?
   multiset->hash multiset->list multiset->set)
 
-(define (freeze-hash h)
-  (make-immutable-hash (hash->list h)))
-
 ;; elements is a hash mapping elements to their counts.
 ;; invariant: all counts are positive.
 ;; (an element with 0 count should be removed from the hash)
