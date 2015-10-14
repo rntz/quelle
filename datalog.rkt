@@ -4,6 +4,8 @@
 
 (define (unimplemented) (error "Unimplemented!"))
 
+
+;;; ---------- DATALOG ----------
 ;; args: list of terms
 ;; body: list of exprs
 (struct clause (name args body) #:transparent)
@@ -47,88 +49,7 @@
 (define db? (hash/c symbol? (listof clause?)))
 
 
-;;; Interpreter.
-(struct state (old-tuples new-tuples) #:transparent)
-
-(define (make-state preds)
-  (state
-    (for/hash ([p preds]) (values p (set)))
-    (for/hash ([p preds]) (values p (mutable-set)))))
-
-;; unions the new-tuples into the old-tuples and clears the new-tuples.
-;; functional; produces a new state object w/o changing the old.
-;; idempotent; applying twice is same as applying once.
-(define (flip-state s)
-  (match-define (state olds news) s)
-  (state
-    (hash-union-with olds news set-union)
-    (for/hash ([(k _) news]) (values k (mutable-set)))))
-
-(define (eval-pred db s stack pred)
-  (match-define (state old-tuples new-tuples) s)
-  (define olds (hash-ref old-tuples pred))
-  (define news (hash-ref new-tuples pred))
-  (if (member pred stack)
-    ;; visiting recursively, just grab old values.
-    olds
-    ;; visiting normally.
-    (let ([stack (cons pred stack)])
-      (for ([c (hash-ref db pred)])
-        (set-union! news (eval-clause db s stack c)))
-      (set-union olds news))))
-
-(define (eval-clause db s stack c)
-  (match-define (clause _ args body) c)
-  (define hashes (eval-conj db s stack body))
-  (for/set ([h hashes])
-    (for/list ([a args])
-      (match a
-        [(t-var v) (hash-ref h v)]
-        [(t-lit v) v]))))
-
-(define (eval-conj db s stack body)
-  (foldl join-substs (set (hash))
-    (for/list ([e body])
-      (eval-expr db s stack e))))
-
-(define (eval-expr db s stack e)
-  (match-define (e-pred name args) e)
-  (let*/set ([t (eval-pred db s stack name)])
-    (extract-args args t)))
-
-;; combines filtering & projecting
-(define (extract-args args tuple)
-  (let/ec return
-    (define (fail-unless x) (unless x (return (set))))
-    (set (let ([h (make-hash)])
-           (assert! (= (length args) (length tuple)))
-           (for ([a args] [t tuple])
-             (match* (a t)
-               [((t-lit x) y) (fail-unless (equal? x y))]
-               [((t-var v) x) (hash-set! h v x)]))
-           h))))
-
-;; Does a natural join on two substitution-sets.
-(define (join-substs subs1 subs2)
-  (printf "joining: ~v\nwith:    ~v\n" subs1 subs2)
-  (define r
-    (let*/set ([s1 subs1] [s2 subs2])
-      (match-substs s1 s2)))
-  (printf "result: ~v\n\n" r)
-  r)
-
-;; matches two substitutions against one another, producing a set of joined
-;; substitutions (either empty or a singleton).
-(define/contract (match-substs s1 s2)
-  (-> hash? hash? set?)
-  (let/ec return
-    (define (check a b)
-      (if (equal? a b) a
-        (return (set))))
-    (set (hash-union-with s1 s2 check))))
-
-
-;;; Parser
+;;; ---------- PARSER INTO DATALOG ----------
 (define (parse-prog clauses)
   (define db (make-hash))
   (for ([c (map parse-clause clauses)])
@@ -153,8 +74,179 @@
     [`(,name . ,args) (e-pred name (map parse-term args))]))
 
 
+;;; ---------- DATAFLOW GRAPHS ----------
+
+;; nodes: maps node ids to node structures.
+;; depends: maps node id N to the node ids of nodes it depends on.
+;; dependees: maps node id N to the node ids of nodes depending on N.
+(struct graph (nodes depends dependees) #:transparent)
+
+;; func: function that updates the node.
+;; same: function that determines if node value is unchanged.
+;; depends: node IDs this node depends on.
+(struct node (func same) #:transparent)
+
+;;; A state of the dataflow graph.
+(struct state
+  ;; dirty is a mutable set of node ids.
+  ;; tuples is a mutable hash from node ids to tuple-sets.
+  (dirty tuples)
+  #:transparent)
+
+;; A node function takes the state of the world and produces a new value for the
+;; node. It must *not* mutate the state of the world.
+(define node-func/c (-> state? (set/c any/c)))
+;; A same function takes the old and new values and determines if there's
+;; been a change.
+(define same-func/c (-> any/c any/c boolean?))
+
+
+;;; ---------- DATAFLOW GRAPH INTERPRETER ----------
+(define/contract (make-state graph)
+  (-> graph? state?)
+  (define node-ids (hash-keys (graph-nodes graph)))
+  (state
+    ;; initially everything's dirty
+    (list->mutable-set node-ids)
+    ;; ... and empty
+    (make-hash (for/list ([n node-ids]) (cons n (set))))))
+
+;; runs nodes in graph until all nodes are clean.
+(define (quiesce g s)
+  (define dirty (state-dirty s))
+  (unless (set-empty? dirty)
+    ;; pick a node "at random" & run it.
+    (run-node! g s (set-first dirty))
+    ;; keep going.
+    (quiesce g s)))
+
+;; re-runs node unconditionally.
+;; does not check whether node is dirty.
+;; clears node's dirty state and dirties its dependees as appropriate.
+(define (run-node! g s node-id)
+  (printf "RUN: ~a\n" node-id)
+  (match-define (graph nodes depends dependees) g)
+  (match-define (state dirty tuples) s)
+  (match-define (node func same) (hash-ref nodes node-id))
+  (define old-tuples (hash-ref tuples node-id (lambda () (set))))
+  (define new-tuples (func s))
+  ;; if we same, we have work to do.
+  (unless (same old-tuples new-tuples)
+    (printf "  ~a changed: ~v\n" node-id (set-subtract new-tuples old-tuples))
+    ;; update our value & dirty our dependees
+    (hash-set! tuples node-id new-tuples)
+    (set-union! dirty (hash-ref dependees node-id)))
+  ;; clear our node
+  (set-remove! dirty node-id))
+
+;;; The node types.
+(define (pred-node pred clause-ids)
+  (define/contract (func s) node-func/c
+    (set-unions
+      (for/list ([c clause-ids])
+        (hash-ref (state-tuples s) c))))
+  ;; TODO?: more optimized equality function? for example, since we're
+  ;; currently monotonic, we know that if our size is the same, we haven't
+  ;; changed!
+  (node func equal?))
+
+(define (clause-node c)
+  (match-define (clause name args body) c)
+  (define/contract (func s) node-func/c
+    (define substs
+      (foldl join-substs (set (hash))
+        (for/list ([e body])
+          (eval-expr s e))))
+    ;; now extract the tuples from the substitution.
+    ;; this is a projection, essentially.
+    (for/set ([s substs])
+      (for/list ([a args])
+        (match a
+          [(t-var v) (hash-ref s v)]
+          [(t-lit v) v]))))
+  ;; TODO?: more optimized equality function? see above.
+  (node func equal?))
+
+;;; Evaluating expressions
+(define (eval-expr s e)
+  (match-define (e-pred pred args) e)
+  (define tuples (hash-ref (state-tuples s) pred))
+  ;; Filter & project.
+  (let*/set ([tuple tuples])
+    (extract-args args tuple)))
+
+;; matches a tuple against an argument
+;; combines filtering & projecting
+(define (extract-args args tuple)
+  (assert! (= (length args) (length tuple)))
+  (let/ec return
+    (define (fail-unless x) (unless x (return (set))))
+    (define h (make-hash))
+    (for ([a args] [v tuple])
+      (match a
+        [(t-var x) (hash-set! h x v)]
+        [(t-lit x) (fail-unless (equal? x v))]))
+    (set (freeze-hash h))))
+
+;; Does a natural join on two substitution-sets.
+(define (join-substs subs1 subs2)
+  (printf "joining: ~v\nwith:    ~v\n" subs1 subs2)
+  (define r
+    (let*/set ([s1 subs1] [s2 subs2])
+      (match-substs s1 s2)))
+  (printf "result: ~v\n\n" r)
+  r)
+
+;; matches two substitutions against one another, producing a set of joined
+;; substitutions (either empty or a singleton).
+(define/contract (match-substs s1 s2)
+  (-> hash? hash? set?)
+  (let/ec return
+    (define (check a b)
+      (if (equal? a b) a
+        (return (set))))
+    (set (hash-union-with s1 s2 check))))
+
+
+;;; ---------- COMPILER, DATALOG TO DATAFLOW GRAPHS ----------
+;; We assign node ids as follows:
+;; - a predicate's node id is simply its name.
+;; - clauses get gensym'ed node ids.
+(define (compile-prog db)
+  (define nodes (make-hash))
+  (define depends (make-hash))
+  (for ([(pred clauses) db])
+    (define clause-ids
+      (for/set ([c clauses])
+        (compile-clause nodes depends c)))
+    (hash-set! nodes pred (pred-node pred clause-ids))
+    (hash-set! depends pred clause-ids))
+  (graph (freeze-hash nodes) (freeze-hash depends) (reverse-graph depends)))
+
+(define (compile-clause nodes depends c)
+  (define clause-id (gensym (clause-name c)))
+  (define pred-ids (map e-pred-name (clause-body c)))
+  (hash-set! depends clause-id pred-ids)
+  (hash-set! nodes clause-id (clause-node c))
+  clause-id)
+
+;; reverses an adjacency-set representation of a graph
+(define/contract (reverse-graph g)
+  (->
+    (hash/c any/c (set/c any/c #:kind 'dont-care) #:immutable 'dont-care)
+    (hash/c any/c (set/c any/c #:kind 'dont-care) #:immutable 'dont-care))
+  (define reversed (make-hash))
+  (for ([(k vs) g])
+    (for ([v vs])
+      (hash-update! reversed v
+        (lambda (x) (set-add! x k) x)
+        (lambda () (mutable-set)))))
+  ;; mutability police! freeze!
+  (for/hash ([(k v) reversed])
+    (values k (freeze-set v))))
+
+
 ;;; test case
-;; person
 (define prog
   '(((person 'constable))
     ((person 'harper))
@@ -165,5 +257,9 @@
     ((ancestor X Z) (parent X Y) (ancestor Y Z))))
 
 (define p (parse-prog prog))
-(define s (make-state '(person parent ancestor)))
-(define (test [s s]) (eval-pred p s '() 'ancestor))
+(define g (compile-prog p))
+(define s (make-state g))
+(define (reset) (set! s (make-state g)))
+(define (test [s s])
+  (quiesce g s)
+  (set->list (hash-ref (state-tuples s) 'ancestor)))
