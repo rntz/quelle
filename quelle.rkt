@@ -2,6 +2,22 @@
 
 (require "util.rkt" "sets.rkt" "multiset.rkt" "queue.rkt")
 
+;;; NOTES
+;;
+;; 1. Will need to throw away state and re-generate on every time-step. This is
+;; because recursive dataflow programs are effectively stateful, and while they
+;; are still - I'm pretty sure - monotonic, if I ever *remove* any tuples, all
+;; bets are off. Since I'm depending on linear state, which might remove tuples,
+;; the safe thing is to throw out everything.
+;;
+;; TODO: Figure out more optimized ways to handle this. In general, the problem
+;; is: non-monotonicity + recursion + incrementality = hard.
+;;
+;; 2. Moreover, it's not clear how best to handle "external inputs" into a
+;; dataflow program. Currently I'll have to do this by hacking them in as
+;; "initial states" of certain predicates. The update functions for these
+;; predicates will be nops ("get & return my current value").
+
 ;; TODO: think carefully about semantics of input & output messages. should they
 ;; be multisets, not queues? that would be more in line with linear logic, and
 ;; could always tag them with unique ids to recover time ordering. otoh,
