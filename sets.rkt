@@ -9,7 +9,7 @@
 
 (define (set-unions sets)
   ;;(let*/set ([s sets]) s)
-  (if (null sets) (set) (apply set-union sets)))
+  (if (null? sets) (set) (apply set-union sets)))
 
 (define (set-intersects sets)
   (apply set-intersect sets))
