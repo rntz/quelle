@@ -1,7 +1,5 @@
 #lang racket
 
-(require racket/generator)
-
 (require "util.rkt" "sets.rkt" "multiset.rkt" "queue.rkt")
 
 ;; TODO: think carefully about semantics of input & output messages. should they
@@ -86,12 +84,7 @@
 ;; Returns the updated substitution-set (which will be empty if unsatisfiable).
 ;; May update cache.
 (define (satisfy-extend prog s cache vars cnd substs)
-  (join-substs vars substs (satisfy prog s cache vars cnd)))
-
-;; Does a natural join on two substitution-sets.
-(define (join-substs vars subs1 subs2)
-  (let*/set ([s1 subs1] [s2 subs2])
-    (match-substs vars s1 s2)))
+  (join substs (satisfy prog s cache vars cnd)))
 
 ;; Finds all substitutions satisfying a single condition.
 ;; May update cache.
@@ -111,6 +104,20 @@
   (let*/set ([tuple tuples])
     (match-arguments vars args tuple)))
 
+;; Does a natural join on two substitution-sets.
+(define (join subs1 subs2)
+  (let*/set ([s1 subs1] [s2 subs2])
+    (join-substs s1 s2)))
+
+;; matches two substitutions against one another, producing a set of joined
+;; substitutions (either empty or a singleton).
+(define (join-substs s1 s2)
+  (let/ec return
+    (define (check a b)
+      (if (equal? a b) a
+        (return (set))))
+    (set (hash-union-with s1 s2 check))))
+
 ;; matches an argument against a concrete tuple, producing a set of
 ;; substitutions. the set is either empty or a singleton.
 (define (match-arguments vars args tuple)
@@ -122,12 +129,6 @@
         [(var? a) (hash-set! h a v)]
         [(not (equal? a v)) (return (set))]))
     (set (freeze-hash h))))
-
-;; matches two substitutions against one another, producing a set of joined
-;; substitutions (either empty or a singleton).
-(define (match-substs vars s1 s2)
-  (let/ec return
-    (set (hash-union-with s1 s2 (lambda (_ _) (return (set)))))))
 
 ;; Computes the entirety of a given view.
 ;; May update cache.
@@ -149,7 +150,9 @@
              [subst (fire prog s cache rule)])
     (transition rule subst)))
 
-(define (apply-transition program state transition)
+(define (apply-transition program state txn)
+  (match-define (transition rule subst) txn)
+  (match-define (state-rule _ pre post side) rule)
   (error "unimplemented"))
 
 ;; applies transitions until there are no more to apply.
