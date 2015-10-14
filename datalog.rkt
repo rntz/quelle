@@ -172,7 +172,7 @@
   (for ([c (map parse-clause clauses)])
     (hash-update! db (clause-name c)
       (lambda (v) (cons c v))
-      (lambda () (list c))))
+      (lambda () '())))
   db)
 
 (define (parse-clause c)
