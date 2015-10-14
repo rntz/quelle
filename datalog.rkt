@@ -48,110 +48,53 @@
 
 
 ;;; Interpreter.
-(struct pred-state (done tuples ;; new-tuples
-                     )
-  #:transparent #:mutable)
+(struct state (old-tuples new-tuples) #:transparent)
 
-;; (define pred-state-empty (state #t (set) (set)))
-;; (fn pred-state-union
-;;   [() pred-state-empty]
-;;   [(x) x]
-;;   [((state d1 t1 nt1) (state d2 t2 nt2))
-;;     (state (and d1 d2) (set-union t1 t2) (set-union nt1 nt2))]
-;;   [(x . xs) (foldl pred-state-union x xs)])
+(define (make-state preds)
+  (state
+    (for/hash ([p preds]) (values p (set)))
+    (for/hash ([p preds]) (values p (mutable-set)))))
 
-(define state/c (hash/c symbol? pred-state?))
-(define (make-state pred-names)
-  (for/hash ([p pred-names])
-    (values p (pred-state #f (mutable-set)))))
+;; unions the new-tuples into the old-tuples and clears the new-tuples.
+;; functional; produces a new state object w/o changing the old.
+;; idempotent; applying twice is same as applying once.
+(define (flip-state s)
+  (match-define (state olds news) s)
+  (state
+    (hash-union-with olds news set-union)
+    (for/hash ([(k _) news]) (values k (mutable-set)))))
 
-(define (state-ref state pred) (hash-ref state pred))
-(define (state-done? state pred) (pred-state-done (state-ref state pred)))
-(define (state-tuples state pred) (pred-state-tuples (state-ref state pred)))
-;; (define (state-new-tuples state pred)
-;;   (pred-state-new-tuples (state-ref state name)))
+(define (eval-pred db s stack pred)
+  (match-define (state old-tuples new-tuples) s)
+  (define olds (hash-ref old-tuples pred))
+  (define news (hash-ref new-tuples pred))
+  (if (member pred stack)
+    ;; visiting recursively, just grab old values.
+    olds
+    ;; visiting normally.
+    (let ([stack (cons pred stack)])
+      (for ([c (hash-ref db pred)])
+        (set-union! news (eval-clause db s stack c)))
+      (set-union olds news))))
 
-;; returns (values done tuples)
-(define (eval-pred db state pred-stack pred)
-  (if (member pred pred-stack)
-    ;; visiting this predicate recursively.
-    (values #f (state-tuples state pred))
-    ;; visiting this predicate normally.
-    (let ([our-state (state-ref state pred)])
-      ;; if it isn't already done, (re-)run it
-      (unless (pred-state-done our-state)
-        (run-pred! db state pred-stack pred our-state))
-      (values (pred-state-done our-state) (pred-state-tuples our-state)))))
-
-(define (run-pred! db state pred-stack pred our-state)
-  (assert! (not (pred-state-done our-state)))
-  (assert! (not (member pred pred-stack)))
-  (define will-be-done #t)
-  (define our-tuples (pred-state-tuples our-state))
-  (set! pred-stack (cons pred pred-stack))
-  ;; calculate the predicate's tuples.
-  (for ([c (hash-ref db pred)]) ;; for each clause
-    (define-values (clause-done clause-tuples)
-      (eval-clause db state pred-stack c))
-    (unless clause-done (set! will-be-done #f))
-    (set-union! our-tuples clause-tuples))
-  (set-pred-state-done! our-state will-be-done))
-
-(define (eval-clause db state pred-stack c)
+(define (eval-clause db s stack c)
   (match-define (clause _ args body) c)
-  (define-values (done hashes) (eval-conj db state pred-stack body))
-  (values done
-          (for/set ([h hashes])
-            (for/list ([a args])
-              (match a
-                [(t-var v) (hash-ref h v)]
-                [(t-lit v) v])))))
+  (define hashes (eval-conj db s stack body))
+  (for/set ([h hashes])
+    (for/list ([a args])
+      (match a
+        [(t-var v) (hash-ref h v)]
+        [(t-lit v) v]))))
 
-;; my kingdom for a monad!
-(define (eval-conj db state pred-stack body)
-  (define (j xs)
-    (foldl join-substs (set (hash)) xs))
-  (eval-exprs db state pred-stack j body))
+(define (eval-conj db s stack body)
+  (foldl join-substs (set (hash))
+    (for/list ([e body])
+      (eval-expr db s stack e))))
 
-;; Does a natural join on two substitution-sets.
-(define (join-substs subs1 subs2)
-  ;; (printf "joining: ~v\nwith:    ~v\n" subs1 subs2)
-  (define r
-    (let*/set ([s1 subs1] [s2 subs2])
-      (match-substs s1 s2)))
-  ;; (printf "result: ~v\n\n" r)
-  r)
-
-;; matches two substitutions against one another, producing a set of joined
-;; substitutions (either empty or a singleton).
-(define/contract (match-substs s1 s2)
-  (-> hash? hash? set?)
-  (let/ec return
-    (define (check a b)
-      (if (equal? a b) a
-        (return (set))))
-    (set (hash-union-with s1 s2 check))))
-
-(define (eval-exprs db state pred-stack f es)
-  (define ok-so-far #t)
-  (define d
-    (for/list ([e es])
-      (define-values (ok s) (eval-expr db state pred-stack e))
-      (unless ok (set! ok-so-far #f))
-      s))
-  (values ok-so-far (f d)))
-
-(define (eval-expr db state pred-stack e)
-  (match e
-    ;; [(e-disj es) (eval-exprs set-unions es)]
-    ;; FIXME: doesn't handle empty intersections properly.
-    ;; [(e-conj es) (eval-exprs set-intersects es)]
-    [(e-pred name args)
-      (define-values (ok tuples)
-        (eval-pred db state pred-stack name))
-      (values ok
-        (let*/set ([t tuples])
-          (extract-args args t)))]))
+(define (eval-expr db s stack e)
+  (match-define (e-pred name args) e)
+  (let*/set ([t (eval-pred db s stack name)])
+    (extract-args args t)))
 
 ;; combines filtering & projecting
 (define (extract-args args tuple)
@@ -164,6 +107,25 @@
                [((t-lit x) y) (fail-unless (equal? x y))]
                [((t-var v) x) (hash-set! h v x)]))
            h))))
+
+;; Does a natural join on two substitution-sets.
+(define (join-substs subs1 subs2)
+  (printf "joining: ~v\nwith:    ~v\n" subs1 subs2)
+  (define r
+    (let*/set ([s1 subs1] [s2 subs2])
+      (match-substs s1 s2)))
+  (printf "result: ~v\n\n" r)
+  r)
+
+;; matches two substitutions against one another, producing a set of joined
+;; substitutions (either empty or a singleton).
+(define/contract (match-substs s1 s2)
+  (-> hash? hash? set?)
+  (let/ec return
+    (define (check a b)
+      (if (equal? a b) a
+        (return (set))))
+    (set (hash-union-with s1 s2 check))))
 
 
 ;;; Parser
@@ -204,4 +166,4 @@
 
 (define p (parse-prog prog))
 (define s (make-state '(person parent ancestor)))
-(define (test) (eval-pred p s '() 'ancestor))
+(define (test [s s]) (eval-pred p s '() 'ancestor))
