@@ -26,6 +26,40 @@ do not change; they cannot be consumed or produced, only true or false, and
 there is no question of "how many" instances of them there are. In contrast,
 linear facts can be consumed and produced and *do* have numeric multiplicity.
 
+** Dependence of view rules on state predicates
+The issue of view rules depending on state is interesting & complicated.
+
+My original idea was to treat state predicates just like view predicates when
+they occur in the premise of a view rule. This works, but is not quite right!
+
+Suppose have(X) is a linear predicate and can(X) is a view predicate. Consider:
+
+  can(buy_soda) :- have(dollar), have(dollar).
+
+Then can(buy_soda) will be *true* even if we only have one dollar! This is
+because "," in a view rule is conjunction ∧, not linear tensor ⊗!
+
+*** Solution: provable(P)
+*Really* what we want is a predicate provable(P) that makes turns *resources* P
+into *propositions*. Note that "provable" here means "hypothetically provable
+from *only the linear facts in the database at the current time*". In
+particular, we cannot use our linear state transition rules to "prove" things.
+Otherwise everything gets very... confusing.
+
+So then we can distinguish between:
+
+  can(buy_soda) :- provable(have(dollar) ⊗ have(dollar)).
+  can(buy_soda) :- provable(have(dollar)), provable(have(dollar)).
+
+Voilà!
+
+*** Problems with implementing this solution
+My current plan is to implement view predicates using forward-chaining. However,
+because of tensor, implementing provable(P) this way causes combinatorial
+explosion!
+
+So for now I'm going to go with my original idea.
+
 * architecture
 Two kinds of facts:
 ground truth (state) / derived knowledge (views)
