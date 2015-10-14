@@ -189,3 +189,19 @@
 (define (parse-expr e)
   (match e
     [`(,name . ,args) (e-pred name (map parse-term args))]))
+
+
+;;; test case
+;; person
+(define prog
+  '(((person 'constable))
+    ((person 'harper))
+    ((person 'arbob))
+    ((parent 'constable 'harper))
+    ((parent 'harper 'arbob))
+    ((ancestor X X) (person X))
+    ((ancestor X Z) (parent X Y) (ancestor Y Z))))
+
+(define p (parse-prog prog))
+(define s (make-state '(person parent ancestor)))
+(define (test) (eval-pred p s '() 'ancestor))
