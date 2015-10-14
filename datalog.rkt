@@ -109,11 +109,28 @@
 
 ;; my kingdom for a monad!
 (define (eval-conj db state pred-stack body)
-  (if (null? body)
-    ;; if our body is empty, then by clause-vars-ok?, our head must contain no
-    ;; variables. thus this is safe.
-    (values #t (set (hash)))
-    (eval-exprs db state pred-stack set-intersects body)))
+  (define (j xs)
+    (foldl join-substs (set (hash)) xs))
+  (eval-exprs db state pred-stack j body))
+
+;; Does a natural join on two substitution-sets.
+(define (join-substs subs1 subs2)
+  ;; (printf "joining: ~v\nwith:    ~v\n" subs1 subs2)
+  (define r
+    (let*/set ([s1 subs1] [s2 subs2])
+      (match-substs s1 s2)))
+  ;; (printf "result: ~v\n\n" r)
+  r)
+
+;; matches two substitutions against one another, producing a set of joined
+;; substitutions (either empty or a singleton).
+(define/contract (match-substs s1 s2)
+  (-> hash? hash? set?)
+  (let/ec return
+    (define (check a b)
+      (if (equal? a b) a
+        (return (set))))
+    (set (hash-union-with s1 s2 check))))
 
 (define (eval-exprs db state pred-stack f es)
   (define ok-so-far #t)
