@@ -65,6 +65,14 @@
                   #:when (> 0 (- v (multiset-count b k))))
         (values k (- v (multiset-count b k)))))))
 
+;; ;; takes the difference between a and b, which produces a hash from
+;; ;; symbols to integer counts.
+;;
+;; (define (multiset-difference a b)
+;;   (for/hash ([k (set-union (multiset->set a) (multiset->set b))]
+;;              #:unless (= (multiset-count a k) (multiset-count b k)))
+;;     (values k (- (multiset-count a k) (multiset-count b k)))))
+
 (define (submultiset? a b)
   (for/and ([(k v) a])
     (<= v (multiset-count b k))))
