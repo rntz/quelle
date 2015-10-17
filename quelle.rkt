@@ -1,6 +1,9 @@
 #lang racket
 
-(require "util.rkt" "sets.rkt" "multiset.rkt" "queue.rkt")
+(require "util.rkt" "sets.rkt" "multiset.rkt" "queue.rkt"
+  (prefix-in flow: "dataflow.rkt"))
+
+(provide (all-defined-out))
 
 ;;; NOTES
 ;;
@@ -17,6 +20,36 @@
 ;; dataflow program. Currently I'll have to do this by hacking them in as
 ;; "initial states" of certain predicates. The update functions for these
 ;; predicates will be nops ("get & return my current value").
+;;
+;; 3. It's not clear when two state transitions are "identical". This question
+;; is relevant for (a) displaying transitions to users during debugging; and (b)
+;; determining whether we are taking a nondeterministic transition or not.
+;;
+;; The coarsest, and perhaps most natural, reasonable equality is: two
+;; transitions are equal if they result in equal states.
+;;
+;; However, we can also distinguish transitions by:
+;;
+;; - which state rule fired. two different rules may lead to the same
+;;   next-state in various ways. TODO: examples.
+;;
+;; - what variable substitution the transition involved. if a variable occurs
+;;   only in side-conditions, for example, there may be redundant transitions to
+;;   the same state.
+;;
+;; - whether a fact was removed and re-added, or merely left alone. for example,
+;; {a,b} --> {a,b,c} may happen due to the rule:
+;;
+;;    b -o b,c.
+;;
+;; which uses and re-creates b, or by the rule:
+;;
+;;    {} -o c when b.
+;;
+;; which merely has b as a side-condition.
+;;
+;; Currently we use all of the above in our definition of transition, making for
+;; a very fine-grained notion of equality of transition.
 
 ;; TODO: think carefully about semantics of input & output messages. should they
 ;; be multisets, not queues? that would be more in line with linear logic, and
@@ -28,11 +61,13 @@
 
 
 ;; ---------- TYPES ----------
-
 ;; A tuple is just a list of values.
 ;; A head-tuple is a list (pred term1 term2 ... termn).
 ;; A condition is a list (pred arg1 arg2 ... argn).
-;;
+(define tuple/c (listof any/c))
+(define condition/c (cons/c symbol? tuple/c))
+(define substitution/c (hash/c symbol? any/c))
+
 ;; An argument is either a term or a variable.
 ;; A variable is a symbol that starts uppercase.
 ;; A term is anything else.
@@ -44,8 +79,9 @@
 (struct program
   ;; preds is a hash from symbols to one of 'view, 'state, 'input, or 'output.
   ;; state-rules is a set of state-rules.
-  ;; view-rules is a hash mapping view-pred symbols to sets of view-rules.
-  (preds state-rules view-rules)
+  ;; views is a hash mapping view-pred symbols to sets of view-rules.
+  ;; every view pred must have an entry in views.
+  (preds state-rules views)
   #:transparent)
 
 ;; a linear "state transition" rule.
@@ -63,69 +99,126 @@
 ;; the variables in head must all be present in body.
 (struct view-rule (vars head body) #:transparent)
 
-;; a transition is a state rule to apply plus a substitution.
-;; a substition is a hash mapping the vars of the state rule to ground terms.
-(struct transition (state-rule substitution) #:transparent)
+;; a transition describes how to update our state.
+;; rule is the state-rule being fired.
+;; subst is a hash mapping the vars of rule to ground terms.
+;; pre is a multiset of facts to be removed.
+;; post is a multiset of facts to be added.
+(struct transition (rule subst pre post)
+  #:transparent)
 
-;; internal is a hash from symbols to multisets of tuples.
-;; inbox & outbox are queues of head-tuples
-(struct state (internal inbox outbox) #:transparent)
+;; our state is a hash from predicate names to multisets of tuples.
+(define state? hash?)
+(define state/c (hash/c symbol? multiset? #:immutable #t))
+
+;; TODO: well-formedness checking for rules, transitions, etc.
 
 
-;; Views and querying.
+;;; ---------- UTILITIES ----------
+(define (pred-type prog p) (hash-ref (program-preds prog) p))
+(define (pred-input? prog p) (equal? 'input (pred-type prog p)))
+(define (pred-output? prog p) (equal? 'output (pred-type prog p)))
+(define (pred-internal? prog p) (equal? 'state (pred-type prog p)))
 
-;; A "view cache" is a mutable hash mapping view-pred symbols to sets of tuples.
-(define (make-cache) (make-hash))
+(define (preds-of-kind kind prog)
+  (for/set ([(p k) (program-preds prog)] #:when (equal? k kind)) p))
 
-;; tries to fire a state rule.
-;; returns a set of substitutions by which the rule can fire.
-;; may update cache.
-;; (empty if it does not fire.)
-(define (fire prog s cache rule)
-  (match-define (state-rule _ pre post side) rule)
-  (satisfy-all (append pre side)))
+(define input-preds (curry preds-of-kind 'input))
+(define output-preds (curry preds-of-kind 'output))
+(define internal-preds (curry preds-of-kind 'state))
+(define view-preds (curry preds-of-kind 'view))
 
-;; returns a set of substitutions which satisfy the conditions.
-;; the conditions may have any kinds of predicates.
-;; may update cache.
-(define (satisfy-all prog s cache vars conds)
+;; returns subhash of state for input predicates
+(define (state-inputs prog s) (hash-filter-keys (curry pred-input? prog) s))
+(define (state-output prog s) (hash-filter-keys (curry pred-output? prog) s))
+(define (state-internal prog s)
+  (hash-filter-keys (curry pred-internal? prog) s))
+
+(define (substate? s1 s2)
+  (for/and ([(k v) s1])
+    (submultiset? v (hash-ref s2 k (lambda () (multiset))))))
+
+(define (state-empty? s) (substate? s (hash)))
+
+(define/contract (instantiate-conditions subst conds)
+  (-> substitution/c (listof condition/c) state/c)
+  (define h (make-hash))
+  (for ([c conds])
+    (match-define (cons pred args) c)
+    (hash-update! h pred
+      (lambda (x) (multiset-add x (args->tuple subst args)))
+      (lambda () (multiset))))
+  (freeze-hash h))
+
+
+;;; ---------- COMPILER: QUELLE -> DATAFLOW ----------
+;; Every predicate gets a node named by it.
+;; Each view-rule gets a node named by a gensym.
+(define (prog->graph prog)
+  (match-define (program preds state-rules views) prog)
+  (define nodes (make-hash))
+  (define depends (make-hash))
+  (for ([(pred kind) preds])
+    (match kind
+      ['view (compile-view nodes depends pred (hash-ref views pred))]
+      [(or 'state 'input) (add-dummy-node nodes depends pred)]))
+  (flow:graph
+    (freeze-hash nodes)
+    (freeze-hash depends)
+    (flow:reverse-graph depends)))
+
+;; this is a minor hack.
+(define (add-dummy-node nodes depends pred)
+  (define/contract (eval-func vals) flow:eval-func/c
+    (hash-ref vals pred))
+  ;; TODO?: equal? here could be (const #t), if it matters.
+  (hash-set! nodes pred (flow:node eval-func equal?))
+  (hash-set! depends pred (set)))
+
+(define (compile-view nodes depends pred rules)
+  (define rule-ids
+    (for/list ([r rules])
+      (compile-view-rule nodes depends r)))
+  (define/contract (eval-func vals) flow:eval-func/c
+    (set-unions (map (curry hash-ref vals) rule-ids)))
+  ;; TODO?: faster same-func than equal?.
+  (hash-set! nodes pred (flow:node eval-func equal?))
+  (hash-set! depends pred (list->set rule-ids)))
+
+(define (compile-view-rule nodes depends rule)
+  (match-define (view-rule vars (cons pred args) body) rule)
+  (define rule-id (gensym pred))
+  (define/contract (eval-func vals) flow:eval-func/c
+    (for/set ([subst (satisfy-all vals body)])
+      (args->tuple subst args)))
+  ;; TODO?: more efficient same-func than equal?.
+  (hash-set! nodes rule-id (flow:node eval-func equal?))
+  (hash-set! depends rule-id (list->set (map car body)))
+  rule-id)
+
+
+;;; ---------- RUNTIME ----------
+;; Finds all substitutions satisfying all conditions.
+(define (satisfy-all vals conds)
   (define substs (set (hash)))
   (for ([c conds]
         ;; early exit if we're unsatisfiable
         #:unless (set-empty? substs))
-    (set! substs (satisfy-extend prog s cache vars c substs)))
+    (set! substs (join substs (satisfy vals c))))
   substs)
 
-;; Tries to satisfy `cnd' in a way that extends the substitution-set `substs'.
-;; Returns the updated substitution-set (which will be empty if unsatisfiable).
-;; May update cache.
-(define (satisfy-extend prog s cache vars cnd substs)
-  (join substs (satisfy prog s cache vars cnd)))
-
 ;; Finds all substitutions satisfying a single condition.
-;; May update cache.
-(define (satisfy prog s cache vars cnd)
+(define (satisfy vals cnd)
   (match-define (cons pred args) cnd)
-  (match-define (state internal-state inbox outbox) s)
-  (define tuples
-    (match (hash-ref (program-preds prog) pred)
-      ['view (hash-ref cache pred
-               (lambda () (compute-view prog s cache pred)))]
-      ['state (hash-ref internal-state pred (set))]
-      ['input (if (queue-empty? inbox)
-                (set)
-                ;; use of queue-peek is asymptotically inefficient :(
-                (set (queue-peek inbox)))]
-      ['output (error "cannot satisfy output predicates")]))
-  (let*/set ([tuple tuples])
-    (match-arguments vars args tuple)))
+  (let*/set ([tuple (hash-ref vals pred)])
+    (match-arguments args tuple)))
 
 ;; Does a natural join on two substitution-sets.
 (define (join subs1 subs2)
   (let*/set ([s1 subs1] [s2 subs2])
     (join-substs s1 s2)))
 
-;; matches two substitutions against one another, producing a set of joined
+;; Matches two substitutions against one another, producing a set of joined
 ;; substitutions (either empty or a singleton).
 (define (join-substs s1 s2)
   (let/ec return
@@ -134,8 +227,8 @@
         (return (set))))
     (set (hash-union-with s1 s2 check))))
 
-;; matches an argument against a concrete tuple, producing a set of
-;; substitutions. the set is either empty or a singleton.
+;; Matches an argument against a concrete tuple, producing a set of
+;; substitutions. The set is either empty or a singleton.
 (define (match-arguments vars args tuple)
   (assert! (= (length args) (length tuple)))
   (let/ec return
@@ -146,60 +239,108 @@
         [(not (equal? a v)) (return (set))]))
     (set (freeze-hash h))))
 
-;; Computes the entirety of a given view.
-;; May update cache.
-;; Returns view-tuples.
-(define (compute-view prog s cache pred)
-  (match-define (program preds state-rules view-rules) prog)
-  (assert! (equal? 'view (hash-ref preds pred #f)))
-  (define rules (hash-ref view-rules pred (set)))
-  (error "unimplemented")
-  ;; (for ([r rules])
-  ;;   )
-  )
+(define (args->tuple subst args)
+  (for/list ([a args])
+    (cond
+      [(var? a) (hash-ref subst a)]
+      [#t a])))
 
 
-;; produces a set of transitions that fire.
+;;; ---------- FINDING TRANSITIONS ----------
+;; TODO?: functions here assume that our dataflow graph has been run to
+;; saturation! instead, inline on-demand dataflow graph evaluation with our
+;; runtime, for better performance?
+;;
+;; NB. must distinguish between runtime for dataflow graph (which has to just
+;; use the current graph values) and runtime for finding state transition (which
+;; can ask the dataflow graph to compute on-demand).
+
+;; Produces the set of transitions that fire.
+;; HEAVYWEIGHT OPERATION. DO NOT CALL REPEATEDLY.
+;; TODO?: have this return a generator/stream?
 (define (transitions prog s)
-  (define cache (make-cache))
-  (for*/set ([rule (program-state-rules prog)]
-             [subst (fire prog s cache rule)])
-    (transition rule subst)))
+  (match-define (program preds state-rules views) prog)
 
-(define (apply-transition program state txn)
-  (match-define (transition rule subst) txn)
+  ;; set up a flow graph representing us
+  (define graph (prog->graph prog))
+  (define (init-value node-id)
+    (match (hash-ref preds node-id #f)
+      ;; NB. multiset->set loses information. This is a design flaw. See
+      ;; "Dependence of view rules on state predicates" in ideas.org for plan to
+      ;; fix it.
+      [(or 'state 'input) (multiset->set (hash-ref s node-id))]
+      ['output (error "outputs should not get graph nodes")]
+      [_ (set)]))
+  (define flow-state (flow:make-state graph init-value))
+
+  ;; quiesce the flow graph state
+  (flow:quiesce! graph flow-state)
+
+  ;; use the flow graph to figure out which state-rules fire
+  (let*/set ([rule state-rules])
+    (fire s rule (flow:state-values flow-state))))
+
+;; Applies a state rule, returning a set of transitions by which the rule can
+;; fire. (Empty if it does not fire.)
+(define (fire s rule vals)
   (match-define (state-rule _ pre post side) rule)
-  (error "unimplemented"))
+  ;; first, find all substs satisfying pre- and side-conditions, ignoring
+  ;; resource multiplicity constraints.
+  (define substs (satisfy-all vals (append pre side)))
+  ;; now, filter down to ones which satisfy multiplicity constraints.
+  (let*/set ([subst substs])
+    (define used (instantiate-conditions subst pre))
+    (if (not (substate? used s))
+      ;; not enough resources to fire :c
+      (set)
+      ;; fire!
+      (set (transition rule subst used (instantiate-conditions subst post))))))
 
+
+;;; Other operations
 ;; applies transitions until there are no more to apply.
 ;; currently errors if there is any nondeterminism.
 ;; FIXME: think harder about nondeterminism.
 ;;
 ;; returns: (values new-state list-of-transitions)
-(define (quiesce program s)
+(define (quiesce! prog s)
   (let loop ([s s]
              [txns '()])
-    (define outs (transitions program s))
+    (define outs (transitions prog s))
     (match (set-count outs)
       [0 (values s (reverse txns))]
       [1 (let ([txn (set-first outs)])
-           (loop (apply-transition program s txn) (cons txn txns)))]
+           (loop (apply-transition s txn) (cons txn txns)))]
       [_ (error "multiple transitions apply")])))
 
+(define (apply-transition s txn)
+  (match-define (transition rule subst pre post) txn)
+  (assert! (substate? pre s))
+  (assert! (for/and ([pred (hash-keys post)])
+             (hash-has-key? s pred)))
+  (for/hash ([(pred tuples) s])
+    (when (hash-has-key? pre pred)
+      (set! tuples (multiset-subtract tuples (hash-ref pre pred))))
+    (when (hash-has-key? post pred)
+      (set! tuples (multiset-union tuples (hash-ref post pred))))
+    (values pred tuples)))
+
 
+;;; Dealing with inputs & outputs.
+
+;; inputs: hash-multiset of new inputs.
 ;; returns: new-state
-(define (send message program st)
-  (match-define (state l i o) st)
-  (state l (queue-push message i) o))
+(define/contract (send program s inputs)
+  (program? state/c state/c . -> . state/c)
+  (assert! (subset? (hash-keys inputs) (input-preds program)))
+  (unless (state-empty? (state-inputs s))
+    (error "state already has inputs!"))
+  (hash-union-with s inputs multiset-union))
 
-;; returns: (values new-state message)
-(define (recv program st [on-empty (lambda () (error "no message to recv"))])
-  (match-define (state l i o) st)
-  (define-values (new-o msg) (queue-pop o on-empty))
-  (values (state l i new-o) msg))
-
-;; returns: (values new-state message-list)
-;; message-list has most recent output message first.
-(define (recv-all program st)
-  (match-define (state l i o) st)
-  (values (state l i empty-queue) (queue->list o)))
+;; returns: (values new-state messages)
+(define/contract (recv prog s)
+  (program? state/c . -> . (values state/c state/c))
+  (unless (state-empty? (state-inputs prog s))
+    (error "receiving from state with fresh inputs"))
+  (define new-s (hash-filter-keys (lambda (p) (not (pred-output? prog p))) s))
+  (values new-s (state-output prog s)))
