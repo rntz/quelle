@@ -1,0 +1,148 @@
+* version with definable type lub & glb operations
+C = constructors
+
+A ::= bool | int | string
+      a | ∀a. A
+      A → B
+      (A₁ ..., Aₙ)
+      C₁(A₁) ∪ C₂(A₂) ... ∪ Cₙ(Aₙ) | ⊥
+      set A
+
+NB. ⊥ is the zero-ary union of constructors
+
+Really a union-of-constructors is a finite mapping from constructors to types.
+We sometimes write unions-of-constructors as "⋃ i ∈ I. Cᵢ(Aᵢ)". The index set I
+is always implicitly finite, and the mapping from I to Cᵢ is injective (i ≠ j
+implies Cᵢ ≠ Cⱼ).
+
+some equations:
+    A = ∀a. A                               (a ∉ FV(A))
+    -- how does this complicate type inference/subtyping/lub/glb?
+
+types form a *partial* ⊔-semilattice with an identity:
+    A = A ⊔ A
+    A ⊔ B = B ⊔ A
+    (A ⊔ B) ⊔ C = A ⊔ (B ⊔ C)
+    A = ⊥ ⊔ A = A ⊔ ⊥
+
+    a ⊔ b is undefined for a ≠ b
+    (∀a. A) ⊔ (∀a. B) = ∀a. (A ⊔ B)
+    -- this is one option. another option is
+    (∀a. A) ⊔ (∀a. B) = ∀a. (A ⊔ B)      (if A ≤ B or B ≤ A)
+    -- wait, this latter is overly restrictive if a ∉ FV(B)
+    -- when does this come up in practice?
+
+    -- what is (∀a. set a) ⊔ set int?
+    -- ∀a. (set a ⊔ set int) = ∀a. set (a ⊔ int) = ... type error!
+
+    (∀a. A) ⊔ B = ∀a. (A ⊔ B)             (a ∉ FV(B))
+
+    (A → X) ⊔ (B → Y) = (A ⊓ B) → (X ⊔ Y)
+
+    (A₁..., Aₙ) ⊔ (B₁...,Bₙ) = (A₁ ⊔ B₁ ..., Aₙ ⊔ Bₙ)
+
+    (⋃i∈I. Cᵢ(Aᵢ)) ⊔ (⋃i∈J. Cᵢ(Bᵢ)) = ⋃ i ∈ (I ∪ J). Cᵢ(Aᵢ ⊔ Bᵢ)
+      where Aᵢ = ⊥ if i ∉ I
+        and Bᵢ = ⊥ if i ∉ J
+
+    -- this is an example of ⊔ differing from ∪
+    set A ⊔ set B = set (A ⊔ B)
+    -- alternative possibility:
+    set A ⊔ set B = set (A ⊔ B)             (if A ≤ B or B ≤ A)
+
+types form a ⊓-semilattice with a lower bound:
+    A = A ⊓ A
+    A ⊓ B = B ⊓ A
+    (A ⊓ B) ⊓ C = A ⊓ (B ⊓ C)
+    ⊥ = A ⊓ ⊥ = ⊥ ⊓ A
+
+    a ⊓ b = ⊥                               (a ≠ b)
+    -- this is wrong, I think.
+    -- I think we need a way to unify type variables.
+    (∀a. A) ⊓ (∀a. B) = ∀a. (A ⊓ B)
+
+    -- hm, want (∀a. set a) ⊓ set int = set int.
+    -- (∀a. set a) ⊓ set int
+    -- = ∀a. (set a ⊓ set int)
+    -- = ∀a. set (a ⊓ int)
+    -- uh-oh... somehow we need to eliminate the a.
+    -- I guess semantically we "guess" it?
+    -- wait. what if I let a = ⊥? then ⊥ ⊓ int = ⊥, not int!
+    -- but isn't set ⊥ ≤ set int?
+    -- do I *need* ⊥? can just have (empty : ∀a. set a)!
+    -- certainly I have derived ⊥ as the "empty" case.
+    -- but it's ok if that's not an identity of ⊔.
+
+    bool ⊓ A = ⊥                            (A ≠ bool)
+    ditto for {int, string}
+
+    A → X ⊓ B → Y = (A ∪ B) → X ⊓ Y         (if A ∪ B exists)
+    A → X ⊓ B → Y = ⊥                       (otherwise)
+
+    (A₁..., Aₙ) ⊓ (B₁..., Bₙ) = (A₁ ⊓ B₁ ..., Aₙ ⊓ Bₙ)
+    (A₁..., Aₙ) ⊓ (B₁..., Bₘ) = ⊥           (n ≠ m)
+
+    (⋃ i∈I. Cᵢ(Aᵢ)) ⊓ (⋃ i∈J. Cᵢ(Bᵢ)) = ⋃ i ∈ (I ⊓ J). Cᵢ(Aᵢ ⊓ Bᵢ)
+
+    set A ⊓ set B = set (A ⊓ B)
+
+there is a partial ordering on types induced by these (partial) semilattices.
+alternatively, you can see the semilattices as induced by the partial ordering.
+whatever.
+
+* version with explicit type union & intersection
+C = constructors
+
+A ::= bool | int | string
+      a | ∀a. A
+      A → B
+      C(A) | (A,...)
+      set A
+      A ∪ B | A ∩ B | ⊤ | ⊥
+
+types form a bounded lattice under ∪, ∩, ⊤, ⊥:
+    A ∪ B = B ∪ A
+    A ∩ B = B ∩ A
+    A = A ∪ A = A ∩ A
+    A = A ∪ ⊥ = ⊥ ∪ A
+    A = A ∩ ⊤ = ⊤ ∩ A
+    ⊤ = ⊤ ∪ A = A ∪ ⊤
+    ⊥ = ⊥ ∩ A = A ∩ ⊥
+
+more type equalities:
+    bool ∩ x = ⊥                        (for x ≠ bool)
+    ditto int, string
+
+    set A ∩ set B = set (A ∩ B)
+
+    A = ∀a. A                          (for a ∉ FV(A))
+    (∀a. A) ∪ B = ∀a. (A ∪ B)         (for a ∉ FV(B))
+    ∀a. (A ∩ B) = (∀a. A) ∩ (∀a. B)
+
+    (A → X) ∩ (B → Y) = (A ∪ B) → X ∩ Y
+    (A → X) ∪ (B → Y) = (A ∩ B) → X ∪ Y
+
+    C(A) ∩ C'(B) = ⊥                    (for C ≠ C')
+    C(A) ∩ C(B) = C(A ∩ B)
+    C(A) ∪ C(B) = C(A ∪ B)
+
+    (A1,...,An) ∩ (B1,...,Bn) = (A1 ∩ B1, ..., An ∩ Bn)
+    (A1,...,An) ∩ (B1,...,Bm) = ⊥       (for n ≠ m)
+
+subtyping rule:
+    if A ≤ B then ∀a. A ≤ ∀a. B
+    -- what does this mean in terms of the lattice, though?
+    -- so it means:
+    if A ∪ B = B then (∀a. A) ∪ (∀a. B) = ∀a. B
+    -- which is kind of strange.
+    -- maybe there is undecidability lurking here.
+    -- or at least something complicated.
+    -- surely intersection/refinement types have been investigated before!
+
+subtyping is the partial order corresponding to this type lattice.
+
+  x ∈ (∩ a. A) ∪ (∩ a. B)
+  ↔ x ∈ (∩ a. A) ∨ x ∈ (∩ a. B)
+  ↔ (∀a. x ∈ A) ∨ (∀a. x ∈ B)
+  
+-- YONEDA: (x ≤ y) ↔ ∀a. ((a ≤ x) => (a ≤ y))
