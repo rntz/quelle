@@ -1,12 +1,12 @@
 #lang racket
 
-(require "util.rkt" "sets.rkt")
+(require "util.rkt")
 
 (provide
   reverse-graph
   (struct-out graph) (struct-out node) (struct-out state)
   eval-func/c same-func/c
-  make-state quiesce run-node!)
+  make-state quiesce! run-node!)
 
 ;; generic and useful utility:
 ;; reverses an adjacency-set representation of a graph
@@ -44,9 +44,9 @@
   (dirty values)
   #:transparent)
 
-;; A node function takes the state of the world and produces a new value for the
-;; node. It must *not* mutate the state of the world.
-(define eval-func/c (-> state? (set/c any/c)))
+;; A node function takes a hash from node ids to their current values; and
+;; produces a new value for the node.
+(define eval-func/c (-> (hash/c symbol? any/c) any/c))
 
 ;; A same function takes the old and new values and determines if there's
 ;; been a change.
@@ -66,13 +66,13 @@
         (cons n (init-value n))))))
 
 ;; runs nodes in graph until all nodes are clean.
-(define (quiesce g s)
+(define (quiesce! g s)
   (define dirty (state-dirty s))
   (unless (set-empty? dirty)
     ;; pick a node "at random" & run it.
     (run-node! g s (set-first dirty))
     ;; keep going.
-    (quiesce g s)))
+    (quiesce! g s)))
 
 ;; re-runs node unconditionally.
 ;; does not check whether node is dirty.
@@ -81,11 +81,11 @@
   (printf "RUN: ~a\n" node-id)
   (match-define (graph nodes depends dependees) g)
   (match-define (state dirty vals) s)
-  (match-define (node func same) (hash-ref nodes node-id))
-  (define old-val (hash-ref vals node-id (lambda () (set))))
-  (define new-val (func s))
+  (match-define (node eval-func same-func) (hash-ref nodes node-id))
+  (define old-val (hash-ref vals node-id))
+  (define new-val (eval-func vals))
   ;; if we same, we have work to do.
-  (unless (same old-val new-val)
+  (unless (same-func old-val new-val)
     ;; update our value & dirty our dependees
     (hash-set! vals node-id new-val)
     (set-union! dirty (hash-ref dependees node-id)))

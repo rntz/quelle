@@ -96,10 +96,10 @@
 
 ;;; The node types.
 (define (pred-node pred clause-ids)
-  (define/contract (func s) eval-func/c
+  (define/contract (func vals) eval-func/c
     (set-unions
       (for/list ([c clause-ids])
-        (hash-ref (state-values s) c))))
+        (hash-ref vals c))))
   ;; TODO?: more optimized equality function? for example, since we're
   ;; currently monotonic, we know that if our size is the same, we haven't
   ;; changed!
@@ -107,11 +107,11 @@
 
 (define (clause-node c)
   (match-define (clause name args body) c)
-  (define/contract (func s) eval-func/c
+  (define/contract (func vals) eval-func/c
     (define substs
       (foldl join-substs (set (hash))
         (for/list ([e body])
-          (eval-expr s e))))
+          (eval-expr vals e))))
     ;; now extract the tuples from the substitution.
     ;; this is a projection, essentially.
     (for/set ([s substs])
@@ -123,9 +123,9 @@
   (node func equal?))
 
 ;;; Evaluating expressions
-(define (eval-expr s e)
+(define (eval-expr vals e)
   (match-define (e-pred pred args) e)
-  (define tuples (hash-ref (state-values s) pred))
+  (define tuples (hash-ref vals pred))
   ;; Filter & project.
   (let*/set ([tuple tuples])
     (extract-args args tuple)))
@@ -178,5 +178,5 @@
 (reset)
 
 (define (test [s s])
-  (quiesce g s)
+  (quiesce! g s)
   (set->list (hash-ref (state-values s) 'ancestor)))
