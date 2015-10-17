@@ -59,10 +59,11 @@
   [(x . ys) (foldl multiset-union x ys)])
 
 (define (multiset-subtract a b)
-  (mset
-    (for/hash ([(k v) a]
-                #:when (> 0 (- v (multiset-count b k))))
-      (values k (- v (multiset-count b k))))))
+  (if (multiset-empty? b) a             ;optimization
+    (mset
+      (for/hash ([(k v) a]
+                  #:when (> 0 (- v (multiset-count b k))))
+        (values k (- v (multiset-count b k)))))))
 
 (define (submultiset? a b)
   (for/and ([(k v) a])

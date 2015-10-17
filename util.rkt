@@ -2,11 +2,12 @@
 
 (require racket (for-syntax syntax/parse))
 
+
+;;; Syntax utilities
 (provide
   define-syntax-parser TODO fn enum enum-case
-  (for-syntax syntax-parse syntax-parser)  ;; re-export
-  assert! warn! flip print-error index-of eqmap stream-take
-  freeze-set freeze-hash hash-union-with hash-intersection-with)
+  ;; re-export
+  (for-syntax syntax-parse syntax-parser))
 
 (define-syntax define-syntax-parser
   (syntax-parser
@@ -47,6 +48,8 @@
 
 
 ;;; Miscellaneous utilities
+(provide assert! warn! flip print-error index-of eqmap)
+
 (define (assert! t) (unless t (error "ASSERTION FAILURE")))
 (define (warn! msg) (displayln (format "WARNING: ~a" msg)) )
 
@@ -66,6 +69,10 @@
   (and (andmap (lambda (l) (= len (length l))) lsts)
        (apply andmap eq l lsts)))
 
+
+;;; stream utilities
+(provide stream-take stream-append-lazy)
+
 (define (stream-take n s)
   (for/list ([x (in-stream s)]
              [_ (in-range n)])
@@ -76,8 +83,34 @@
     (stream-cons (stream-first stream)
       (stream-append-lazy (stream-rest stream stream-thunk)))))
 
+
+;;; set utilities
+(provide freeze-set set-unions set-intersects set-filter)
+
 (define (freeze-set s) (for/set ([x s]) x))
+
+(define (set-unions sets)
+  ;;(let*/set ([s sets]) s)
+  (if (null? sets) (set) (apply set-union sets)))
+
+(define (set-intersects sets)
+  (apply set-intersect sets))
+
+(define (set-filter p s)
+  (for/set ([x s] #:when (p x)) x))
+
+
+;;; hash utilities
+(provide freeze-hash hash-union-with hash-intersection-with
+  hash-filter-keys hash-select-keys)
+
 (define (freeze-hash h) (for/hash ([(k v) h]) (values k v)))
+
+(define (hash-filter-keys p h)
+  (for/hash ([(k v) h] #:when (p k)) (values k v)))
+
+(define (hash-select-keys h k)
+  (hash-filter-keys (curry set-member? (for/set ([x k]) x)) h))
 
 (define (hash-union-with a b f)
   (define keys (set-union (list->set (dict-keys a)) (list->set (dict-keys b))))
